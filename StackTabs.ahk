@@ -5,7 +5,7 @@
 
 ; ============ CONFIGURATION ============
 ; Title text that must appear in the popup/shell window.
-g_WindowTitleMatch := "Brave"
+g_WindowTitleMatch := "Powershell"
 
 ; Optional EXE filter. Leave blank to match any process.
 g_TargetExe := ""
@@ -13,7 +13,7 @@ g_TargetExe := ""
 ; How often to scan for new / replaced windows.
 g_RefreshInterval := 500
 g_CaptureDelayMs := 900
-g_TabDisappearGraceMs := 2500
+g_TabDisappearGraceMs := 300
 
 ; Host window defaults.
 g_HostTitle := "StackTabs"
@@ -27,39 +27,35 @@ g_TabGap := 6
 g_MinTabWidth := 120
 g_MaxTabWidth := 240
 g_TabHeight := 30
+g_TabSlotMax := 20
+g_CloseButtonWidth := 22
+g_PopoutButtonWidth := 22
 
 ; Diagnostics.
 g_DebugLogPath := A_ScriptDir "\StackTabs-discovery.txt"
 
 ; ============ STATE ============
-g_HostGui := ""
-g_HostHwnd := 0
-g_ClientHwnd := 0
-g_StatusText := ""
-g_TabButtons := Map()        ; tabId -> Gui control
-g_TabRecords := Map()        ; tabId -> record object
-g_TabOrder := []             ; ordered tab ids
-g_HwndToTabId := Map()       ; hwnd -> tabId
-g_PendingCandidates := Map() ; tabId -> {firstSeen, candidate}
-g_ActiveTabId := ""
+g_MainHost := ""             ; HostInstance for main window
+g_PopoutHosts := []          ; array of HostInstance for popped-out windows
+g_PendingCandidates := Map() ; tabId -> {firstSeen, candidate} (main host only)
 g_IsCleaningUp := false
 
-BuildHostGui()
+BuildHostInstance(false)  ; create main host
 OnExit(CleanupAll)
 RefreshWindows()
 SetTimer(RefreshWindows, g_RefreshInterval)
 
 ; Win+Shift+T toggles the host window.
 #+t:: {
-    global g_HostGui
+    global g_MainHost
 
-    if !g_HostGui
+    if !g_MainHost
         return
 
-    if WinExist("ahk_id " g_HostGui.Hwnd) && WinActive("ahk_id " g_HostGui.Hwnd)
-        g_HostGui.Hide()
+    if WinExist("ahk_id " g_MainHost.hwnd) && WinActive("ahk_id " g_MainHost.hwnd)
+        g_MainHost.gui.Hide()
     else
-        g_HostGui.Show()
+        g_MainHost.gui.Show()
 }
 
 ; Win+Shift+D writes the current hierarchy scan to disk.
@@ -67,154 +63,264 @@ SetTimer(RefreshWindows, g_RefreshInterval)
     DumpDiscoveryDebug()
 }
 
-#HotIf StackTabsHostIsActive()
-^Tab:: {
-    CycleTabs(1)
-}
-^+Tab:: {
-    CycleTabs(-1)
-}
-#HotIf
-
-BuildHostGui() {
-    global g_HostGui, g_HostHwnd, g_ClientHwnd, g_StatusText
-    global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight
-    global g_WindowTitleMatch
-
-    if g_HostGui
-        g_HostGui.Destroy()
-
-    g_HostGui := Gui("+Resize +MinSize" g_HostMinWidth "x" g_HostMinHeight, g_HostTitle)
-    g_HostGui.BackColor := "1E1E1E"
-    g_HostGui.MarginX := 0
-    g_HostGui.MarginY := 0
-    g_HostGui.SetFont("s10 cWhite", "Segoe UI")
-    g_HostGui.OnEvent("Close", HostGuiClosed)
-
-    ; Keep a hidden status control so existing update helpers stay simple.
-    g_StatusText := g_HostGui.Add("Text", "Hidden x0 y0 w0 h0", "")
-
-    g_HostGui.Show("w" g_HostWidth " h" g_HostHeight)
-    g_HostHwnd := g_HostGui.Hwnd
-    g_ClientHwnd := g_HostHwnd
-    g_HostGui.OnEvent("Size", HostGuiResized)
-}
-
-HostGuiClosed(*) {
+; Win+Shift+R restores all windows and exits (use before reload to avoid work loss).
+#+r:: {
     CleanupAll()
     ExitApp()
 }
 
-HostGuiResized(guiObj, minMax, width, height) {
+#HotIf StackTabsHostIsActive()
+^Tab:: {
+    host := GetActiveStackTabsHost()
+    if host
+        CycleTabs(host, 1)
+}
+^+Tab:: {
+    host := GetActiveStackTabsHost()
+    if host
+        CycleTabs(host, -1)
+}
+^w:: {
+    host := GetActiveStackTabsHost()
+    if host
+        CloseActiveTab(host)
+}
+^+o:: {
+    host := GetActiveStackTabsHost()
+    if host && host.activeTabId && !host.isPopout
+        PopOutTab(host, host.activeTabId)
+}
+^+m:: {
+    host := GetActiveStackTabsHost()
+    if host && host.isPopout && host.activeTabId
+        MergeBackTab(host, host.activeTabId)
+}
+#HotIf
+
+IsWindowExists(hwnd) {
+    return !!DllCall("IsWindow", "ptr", hwnd, "int")
+}
+
+GetClientWidth(hwnd) {
+    try {
+        clientX := 0
+        clientY := 0
+        clientW := 0
+        clientH := 0
+        WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " hwnd)
+        return clientW
+    } catch {
+        return 0
+    }
+}
+
+GetAllHosts() {
+    global g_MainHost, g_PopoutHosts
+    hosts := []
+    if g_MainHost
+        hosts.Push(g_MainHost)
+    for h in g_PopoutHosts
+        hosts.Push(h)
+    return hosts
+}
+
+GetHostForHwnd(hwnd) {
+    for host in GetAllHosts() {
+        if host.hwnd = hwnd
+            return host
+    }
+    return ""
+}
+
+BuildHostInstance(isPopout := false) {
+    global g_MainHost, g_PopoutHosts
+    global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight
+    global g_TabHeight, g_CloseButtonWidth
+
+    host := Object()
+    host.isPopout := isPopout
+    host.tabRecords := Map()
+    host.tabOrder := []
+    host.hwndToTabId := Map()
+    host.activeTabId := ""
+    host.tabButtons := Map()
+    host.tabCloseButtons := Map()
+    host.tabSlotButtons := []
+    host.tabSlotCloseButtons := []
+    host.tabSlotPopoutButtons := []
+
+    title := isPopout ? (g_HostTitle " (popped out)") : g_HostTitle
+    host.gui := Gui("+Resize +MinSize" g_HostMinWidth "x" g_HostMinHeight, title)
+    host.gui.BackColor := "1E1E1E"
+    host.gui.MarginX := 0
+    host.gui.MarginY := 0
+    host.gui.SetFont("s10 cWhite", "Segoe UI")
+    host.gui.OnEvent("Close", HostGuiClosed.Bind(host))
+    host.gui.OnEvent("Size", HostGuiResized.Bind(host))
+
+    host.statusText := host.gui.Add("Text", "Hidden x0 y0 w0 h0", "")
+    host.hwnd := host.gui.Hwnd
+    host.clientHwnd := host.hwnd
+    host.gui.Show("w" g_HostWidth " h" g_HostHeight)
+
+    if isPopout
+        g_PopoutHosts.Push(host)
+    else
+        g_MainHost := host
+    return host
+}
+
+HostGuiClosed(host, *) {
+    global g_MainHost, g_PopoutHosts
+    if host.isPopout {
+        ; Restore all tabs in this popout to their original parent (release, don't merge)
+        for tabId in host.tabOrder.Clone()
+            RemoveTrackedTab(host, tabId, true)
+        for i, h in g_PopoutHosts {
+            if h = host {
+                g_PopoutHosts.RemoveAt(i)
+                break
+            }
+        }
+        host.gui.Destroy()
+    } else {
+        CleanupAll()
+        ExitApp()
+    }
+}
+
+HostGuiResized(host, guiObj, minMax, width, height) {
     if minMax = -1
         return
-
-    LayoutTabButtons(width)
-    ShowOnlyActiveTab()
+    LayoutTabButtons(host, width)
+    ShowOnlyActiveTab(host)
 }
 
 RefreshWindows(*) {
-    global g_HostHwnd, g_ClientHwnd, g_IsCleaningUp, g_TabOrder, g_TabRecords, g_ActiveTabId
-    global g_PendingCandidates, g_CaptureDelayMs, g_TabDisappearGraceMs
+    global g_MainHost, g_IsCleaningUp, g_PendingCandidates, g_CaptureDelayMs, g_TabDisappearGraceMs
 
-    if !g_ClientHwnd || !g_HostHwnd || g_IsCleaningUp
-        return
-    if !WinExist("ahk_id " g_HostHwnd)
+    if !g_MainHost || g_IsCleaningUp
         return
 
     now := A_TickCount
-    structureChanged := false
-    currentIds := Map()
 
-    ; Keep existing embedded tabs alive even when their wrapper window is hidden by us.
-    for tabId in g_TabOrder {
-        if !g_TabRecords.Has(tabId)
+    ; Update all hosts: keep tabs alive, check for stale tabs
+    for host in GetAllHosts() {
+        if !WinExist("ahk_id " host.hwnd)
             continue
 
-        record := g_TabRecords[tabId]
-        if WinExist("ahk_id " record.contentHwnd) {
-            record.lastSeenTick := now
-            title := GetPreferredTabTitle(record)
-            if title != ""
-                record.title := title
-        }
-    }
+        structureChanged := false
+        currentIds := Map()
 
-    candidates := DiscoverCandidateTickets()
-    for candidate in candidates {
-        currentIds[candidate.id] := true
-
-        if g_TabRecords.Has(candidate.id) {
-            if UpdateTrackedTab(candidate.id, candidate)
-                structureChanged := true
-            continue
+        ; Keep existing embedded tabs alive
+        for tabId in host.tabOrder {
+            if !host.tabRecords.Has(tabId)
+                continue
+            record := host.tabRecords[tabId]
+            if IsWindowExists(record.contentHwnd) {
+                record.lastSeenTick := now
+                title := GetPreferredTabTitle(record)
+                if title != ""
+                    record.title := title
+            }
         }
 
-        if !g_PendingCandidates.Has(candidate.id) {
-            g_PendingCandidates[candidate.id] := {firstSeen: now, candidate: candidate}
-            AppendDebugLog("New candidate`r`n" candidate.hierarchySummary "`r`n")
-            continue
+        ; Discovery only for main host (popouts don't scan for new windows)
+        if host = g_MainHost {
+            candidates := DiscoverCandidateTickets()
+            for candidate in candidates {
+                currentIds[candidate.id] := true
+
+                if host.tabRecords.Has(candidate.id) {
+                    if UpdateTrackedTab(host, candidate.id, candidate)
+                        structureChanged := true
+                    continue
+                }
+
+                if !g_PendingCandidates.Has(candidate.id) {
+                    g_PendingCandidates[candidate.id] := {firstSeen: now, candidate: candidate}
+                    AppendDebugLog("New candidate`r`n" candidate.hierarchySummary "`r`n")
+                    continue
+                }
+
+                pending := g_PendingCandidates[candidate.id]
+                pending.candidate := candidate
+                if (now - pending.firstSeen) >= g_CaptureDelayMs {
+                    if CreateTrackedTab(host, candidate)
+                        structureChanged := true
+                    g_PendingCandidates.Delete(candidate.id)
+                }
+            }
+
+            stalePending := []
+            for tabId, pending in g_PendingCandidates {
+                if !currentIds.Has(tabId)
+                    stalePending.Push(tabId)
+            }
+            for tabId in stalePending
+                g_PendingCandidates.Delete(tabId)
         }
 
-        pending := g_PendingCandidates[candidate.id]
-        pending.candidate := candidate
-        if (now - pending.firstSeen) >= g_CaptureDelayMs {
-            if CreateTrackedTab(candidate)
-                structureChanged := true
-            g_PendingCandidates.Delete(candidate.id)
+        ; Stale tab cleanup for this host
+        staleTabs := []
+        for tabId in host.tabOrder {
+            if !host.tabRecords.Has(tabId)
+                continue
+            record := host.tabRecords[tabId]
+            winExists := IsWindowExists(record.contentHwnd)
+            if winExists
+                continue
+            if (now - record.lastSeenTick) > g_TabDisappearGraceMs
+                staleTabs.Push(tabId)
         }
+
+        for tabId in staleTabs {
+            RemoveTrackedTab(host, tabId, false)
+            structureChanged := true
+        }
+
+        if host.activeTabId && !host.tabRecords.Has(host.activeTabId)
+            host.activeTabId := ""
+        if (host.activeTabId = "") && host.tabOrder.Length
+            host.activeTabId := host.tabOrder[1]
+
+        if structureChanged {
+            LayoutTabButtons(host)
+            RedrawHostWindow(host)
+        }
+
+        ShowOnlyActiveTab(host)
+        UpdateHostTitle(host)
     }
-
-    stalePending := []
-    for tabId, pending in g_PendingCandidates {
-        if !currentIds.Has(tabId)
-            stalePending.Push(tabId)
-    }
-    for tabId in stalePending
-        g_PendingCandidates.Delete(tabId)
-
-    staleTabs := []
-    for tabId in g_TabOrder {
-        if !g_TabRecords.Has(tabId)
-            continue
-
-        record := g_TabRecords[tabId]
-        if WinExist("ahk_id " record.contentHwnd)
-            continue
-        if (now - record.lastSeenTick) > g_TabDisappearGraceMs
-            staleTabs.Push(tabId)
-    }
-
-    for tabId in staleTabs {
-        RemoveTrackedTab(tabId, false)
-        structureChanged := true
-    }
-
-    if g_ActiveTabId && !g_TabRecords.Has(g_ActiveTabId)
-        g_ActiveTabId := ""
-    if (g_ActiveTabId = "") && g_TabOrder.Length
-        g_ActiveTabId := g_TabOrder[1]
-
-    if structureChanged
-        LayoutTabButtons()
-
-    ShowOnlyActiveTab()
-    UpdateStatusText()
-    UpdateHostTitle()
 }
 
 DiscoverCandidateTickets() {
-    global g_HostHwnd, g_TabRecords
-
     candidates := []
     seenIds := Map()
 
+    ; Build set of all embedded HWNDs (content + top) across all hosts
+    embeddedHwnds := Map()
+    for host in GetAllHosts() {
+        if host.hwnd
+            embeddedHwnds[host.hwnd ""] := true
+        for tabId, record in host.tabRecords {
+            embeddedHwnds[record.contentHwnd ""] := true
+            if record.topHwnd != record.contentHwnd
+                embeddedHwnds[record.topHwnd ""] := true
+        }
+    }
+
     for hwnd in WinGetList() {
-        if hwnd = g_HostHwnd
+        if embeddedHwnds.Has(hwnd "")
             continue
 
         candidate := BuildCandidateFromTopWindow(hwnd)
         if !IsObject(candidate)
+            continue
+        ; Skip if this candidate's content/top is already embedded anywhere
+        if embeddedHwnds.Has(candidate.contentHwnd "")
+            continue
+        if embeddedHwnds.Has(candidate.topHwnd "")
             continue
         if seenIds.Has(candidate.id)
             continue
@@ -344,24 +450,22 @@ BuildCandidateId(topHwnd, title, processName, contentHwnd) {
     return StrLower(processName) "|" rootOwner "|" NormalizeTitle(title) "|" contentClass
 }
 
-CreateTrackedTab(candidate) {
-    global g_TabRecords, g_TabOrder, g_ActiveTabId
-
-    if g_TabRecords.Has(candidate.id)
+CreateTrackedTab(host, candidate) {
+    if host.tabRecords.Has(candidate.id)
         return false
 
     record := BuildTrackedRecord(candidate)
-    g_TabRecords[candidate.id] := record
+    host.tabRecords[candidate.id] := record
 
-    if !AttachTrackedWindow(candidate.id) {
-        g_TabRecords.Delete(candidate.id)
+    if !AttachTrackedWindow(host, candidate.id) {
+        host.tabRecords.Delete(candidate.id)
         return false
     }
 
-    IndexTrackedHwnds(candidate.id)
-    g_TabOrder.Push(candidate.id)
-    if (g_ActiveTabId = "")
-        g_ActiveTabId := candidate.id
+    IndexTrackedHwnds(host, candidate.id)
+    host.tabOrder.Push(candidate.id)
+    if (host.activeTabId = "")
+        host.activeTabId := candidate.id
     return true
 }
 
@@ -390,10 +494,8 @@ BuildTrackedRecord(candidate) {
     }
 }
 
-UpdateTrackedTab(tabId, candidate) {
-    global g_TabRecords, g_ClientHwnd
-
-    record := g_TabRecords[tabId]
+UpdateTrackedTab(host, tabId, candidate) {
+    record := host.tabRecords[tabId]
     record.lastSeenTick := A_TickCount
     record.title := candidate.title
     record.hierarchySummary := candidate.hierarchySummary
@@ -401,14 +503,14 @@ UpdateTrackedTab(tabId, candidate) {
     record.rootOwner := candidate.rootOwner
 
     if (record.topHwnd != candidate.topHwnd || record.contentHwnd != candidate.contentHwnd) {
-        RebindTrackedTab(tabId, candidate)
+        RebindTrackedTab(host, tabId, candidate)
         return true
     }
 
     if WinExist("ahk_id " record.contentHwnd) {
         currentParent := DllCall("GetParent", "ptr", record.contentHwnd, "ptr")
-        if currentParent != g_ClientHwnd {
-            AttachTrackedWindow(tabId)
+        if currentParent != host.clientHwnd {
+            AttachTrackedWindow(host, tabId)
             return true
         }
     }
@@ -416,51 +518,70 @@ UpdateTrackedTab(tabId, candidate) {
     return false
 }
 
-RebindTrackedTab(tabId, candidate) {
-    global g_TabRecords
-
-    if !g_TabRecords.Has(tabId)
+RebindTrackedTab(host, tabId, candidate) {
+    if !host.tabRecords.Has(tabId)
         return
 
-    DetachTrackedWindow(tabId, false, false)
-    UnindexTrackedHwnds(tabId)
+    DetachTrackedWindow(host, tabId, false, false)
+    UnindexTrackedHwnds(host, tabId)
 
     record := BuildTrackedRecord(candidate)
-    g_TabRecords[tabId] := record
-    AttachTrackedWindow(tabId)
-    IndexTrackedHwnds(tabId)
+    host.tabRecords[tabId] := record
+    AttachTrackedWindow(host, tabId)
+    IndexTrackedHwnds(host, tabId)
     AppendDebugLog("Rebound tab: " tabId "`r`n" candidate.hierarchySummary "`r`n")
 }
 
-RemoveTrackedTab(tabId, restoreWindow := true) {
-    global g_TabRecords, g_TabOrder, g_ActiveTabId
-
-    if !g_TabRecords.Has(tabId)
+CloseTab(host, tabId) {
+    if !host.tabRecords.Has(tabId)
         return
 
-    DetachTrackedWindow(tabId, restoreWindow, true)
-    UnindexTrackedHwnds(tabId)
+    record := host.tabRecords[tabId]
+    topHwnd := record.topHwnd
+    RemoveTrackedTab(host, tabId, false)
+    if WinExist("ahk_id " topHwnd)
+        WinClose("ahk_id " topHwnd)
 
-    for idx, currentId in g_TabOrder {
+    SetTimer(CloseTabDeferredUpdate.Bind(host), -1)
+}
+
+CloseTabDeferredUpdate(host, *) {
+    LayoutTabButtons(host)
+    ShowOnlyActiveTab(host)
+    UpdateHostTitle(host)
+    RedrawHostWindow(host)
+}
+
+CloseActiveTab(host) {
+    if host.activeTabId != ""
+        CloseTab(host, host.activeTabId)
+}
+
+RemoveTrackedTab(host, tabId, restoreWindow := true) {
+    if !host.tabRecords.Has(tabId)
+        return
+
+    DetachTrackedWindow(host, tabId, restoreWindow, true)
+    UnindexTrackedHwnds(host, tabId)
+
+    for idx, currentId in host.tabOrder {
         if currentId = tabId {
-            g_TabOrder.RemoveAt(idx)
+            host.tabOrder.RemoveAt(idx)
             break
         }
     }
 
-    g_TabRecords.Delete(tabId)
+    host.tabRecords.Delete(tabId)
 
-    if g_ActiveTabId = tabId
-        g_ActiveTabId := g_TabOrder.Length ? g_TabOrder[1] : ""
+    if host.activeTabId = tabId
+        host.activeTabId := host.tabOrder.Length ? host.tabOrder[1] : ""
 }
 
-AttachTrackedWindow(tabId) {
-    global g_TabRecords, g_ClientHwnd
-
-    if !g_TabRecords.Has(tabId)
+AttachTrackedWindow(host, tabId) {
+    if !host.tabRecords.Has(tabId)
         return false
 
-    record := g_TabRecords[tabId]
+    record := host.tabRecords[tabId]
     hwnd := record.contentHwnd
 
     if !WinExist("ahk_id " hwnd)
@@ -487,7 +608,7 @@ AttachTrackedWindow(tabId) {
     SetWindowLongPtrValue(hwnd, -8, 0)
     SetWindowLongPtrValue(hwnd, -16, newStyle)
     SetWindowLongPtrValue(hwnd, -20, newExStyle)
-    DllCall("SetParent", "ptr", hwnd, "ptr", g_ClientHwnd, "ptr")
+    DllCall("SetParent", "ptr", hwnd, "ptr", host.clientHwnd, "ptr")
 
     flags := 0x0020 | 0x0040 | 0x0004 | 0x0010
     DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", 0, "int", 0, "int", 100, "int", 100, "uint", flags)
@@ -496,13 +617,11 @@ AttachTrackedWindow(tabId) {
     return true
 }
 
-DetachTrackedWindow(tabId, restoreWindow := true, restoreSource := true) {
-    global g_TabRecords
-
-    if !g_TabRecords.Has(tabId)
+DetachTrackedWindow(host, tabId, restoreWindow := true, restoreSource := true) {
+    if !host.tabRecords.Has(tabId)
         return
 
-    record := g_TabRecords[tabId]
+    record := host.tabRecords[tabId]
     hwnd := record.contentHwnd
 
     if WinExist("ahk_id " hwnd) {
@@ -525,115 +644,288 @@ DetachTrackedWindow(tabId, restoreWindow := true, restoreSource := true) {
     record.sourceWasHidden := false
 }
 
-IndexTrackedHwnds(tabId) {
-    global g_TabRecords, g_HwndToTabId
-
-    if !g_TabRecords.Has(tabId)
+IndexTrackedHwnds(host, tabId) {
+    if !host.tabRecords.Has(tabId)
         return
 
-    record := g_TabRecords[tabId]
-    g_HwndToTabId[record.contentHwnd] := tabId
+    record := host.tabRecords[tabId]
+    host.hwndToTabId[record.contentHwnd] := tabId
     if record.topHwnd != record.contentHwnd
-        g_HwndToTabId[record.topHwnd] := tabId
+        host.hwndToTabId[record.topHwnd] := tabId
 }
 
-UnindexTrackedHwnds(tabId) {
-    global g_TabRecords, g_HwndToTabId
-
-    if !g_TabRecords.Has(tabId)
+UnindexTrackedHwnds(host, tabId) {
+    if !host.tabRecords.Has(tabId)
         return
 
-    record := g_TabRecords[tabId]
-    TryDeleteMapKey(g_HwndToTabId, record.contentHwnd)
+    record := host.tabRecords[tabId]
+    TryDeleteMapKey(host.hwndToTabId, record.contentHwnd)
     if record.topHwnd != record.contentHwnd
-        TryDeleteMapKey(g_HwndToTabId, record.topHwnd)
+        TryDeleteMapKey(host.hwndToTabId, record.topHwnd)
 }
 
-LayoutTabButtons(windowWidth := 0) {
-    global g_HostGui, g_HostHwnd, g_HostWidth, g_HostPadding, g_TabButtons
-    global g_TabOrder, g_TabRecords, g_ActiveTabId, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
+LayoutTabButtons(host, windowWidth := 0) {
+    global g_HostWidth, g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
+    global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabSlotMax
 
-    if !g_HostGui
+    if !host || !host.gui
         return
-    if !g_HostHwnd || !WinExist("ahk_id " g_HostHwnd)
+    if !host.hwnd || !WinExist("ahk_id " host.hwnd)
         return
 
     if !windowWidth {
-        try {
-            clientX := 0
-            clientY := 0
-            clientW := 0
-            clientH := 0
-            WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " g_HostHwnd)
-            windowWidth := clientW
-        } catch {
+        windowWidth := GetClientWidth(host.hwnd)
+        if !windowWidth
             windowWidth := g_HostWidth
-        }
     }
     if !windowWidth
         windowWidth := g_HostWidth
 
-    for _, ctrl in g_TabButtons
-        try ctrl.Destroy()
-    g_TabButtons := Map()
+    tabCount := host.tabOrder.Length
+    extraBtnWidth := g_CloseButtonWidth + g_PopoutButtonWidth  ; popout + close per tab
 
-    tabCount := g_TabOrder.Length
-    if !tabCount
+    if !tabCount {
+        for _, ctrl in host.tabSlotButtons
+            ctrl.Visible := false
+        for _, ctrl in host.tabSlotCloseButtons
+            ctrl.Visible := false
+        for _, ctrl in host.tabSlotPopoutButtons
+            ctrl.Visible := false
+        host.tabButtons := Map()
+        host.tabCloseButtons := Map()
+        host.tabPopoutButtons := Map()
         return
+    }
+
+    needed := Min(tabCount, g_TabSlotMax)
+    while host.tabSlotButtons.Length < needed {
+        btn := host.gui.Add("Text", "Hidden x0 y7 w100 h" g_TabHeight " +0x200 +0x100 Border Center", "")
+        btn.SetFont("s9", "Segoe UI Semibold")
+        host.tabSlotButtons.Push(btn)
+        popoutBtn := host.gui.Add("Text", "Hidden x0 y7 w" g_PopoutButtonWidth " h" g_TabHeight " +0x200 +0x100 Border Center", "")
+        popoutBtn.SetFont("s9", "Segoe UI")
+        popoutBtn.Opt("cAAAAAA")
+        host.tabSlotPopoutButtons.Push(popoutBtn)
+        closeBtn := host.gui.Add("Text", "Hidden x0 y7 w" g_CloseButtonWidth " h" g_TabHeight " +0x200 +0x100 Border Center", "×")
+        closeBtn.SetFont("s10 Bold", "Segoe UI")
+        closeBtn.Opt("cAAAAAA")
+        host.tabSlotCloseButtons.Push(closeBtn)
+    }
 
     usableWidth := Max(200, windowWidth - (g_HostPadding * 2))
     tabWidth := Floor((usableWidth - ((tabCount - 1) * g_TabGap)) / tabCount)
     tabWidth := Max(g_MinTabWidth, Min(g_MaxTabWidth, tabWidth))
+    titleWidth := tabWidth - extraBtnWidth
 
+    host.tabButtons := Map()
+    host.tabCloseButtons := Map()
+    host.tabPopoutButtons := Map()
     x := g_HostPadding
-    for tabId in g_TabOrder {
-        title := g_TabRecords.Has(tabId) ? g_TabRecords[tabId].title : "Window"
-        btn := g_HostGui.Add("Text", "x" x " y7 w" tabWidth " h" g_TabHeight " +0x200 +0x100 Border Center", ShortTitle(title, 26))
-        btn.SetFont("s9", "Segoe UI Semibold")
-        btn.OnEvent("Click", SelectTab.Bind(tabId))
-        g_TabButtons[tabId] := btn
+    for i, tabId in host.tabOrder {
+        if i > g_TabSlotMax
+            break
+        btn := host.tabSlotButtons[i]
+        popoutBtn := host.tabSlotPopoutButtons[i]
+        closeBtn := host.tabSlotCloseButtons[i]
+        title := host.tabRecords.Has(tabId) ? host.tabRecords[tabId].title : "Window"
+        btn.Text := ShortTitle(title, 20)
+        btn.Move(x, 7, titleWidth, g_TabHeight)
+        btn.OnEvent("Click", SelectTab.Bind(host, tabId))
+        btn.Visible := true
+        host.tabButtons[tabId] := btn
+
+        popoutBtn.Move(x + titleWidth, 7, g_PopoutButtonWidth, g_TabHeight)
+        if host.isPopout {
+            popoutBtn.Text := "←"
+            popoutBtn.OnEvent("Click", MergeBackClick.Bind(host, tabId))
+        } else {
+            popoutBtn.Text := "↗"
+            popoutBtn.OnEvent("Click", PopOutClick.Bind(host, tabId))
+        }
+        popoutBtn.Visible := true
+        host.tabPopoutButtons[tabId] := popoutBtn
+
+        closeBtn.Move(x + titleWidth + g_PopoutButtonWidth, 7, g_CloseButtonWidth, g_TabHeight)
+        closeBtn.OnEvent("Click", CloseTabClick.Bind(host, tabId))
+        closeBtn.Visible := true
+        host.tabCloseButtons[tabId] := closeBtn
+
         x += tabWidth + g_TabGap
     }
 
-    UpdateTabButtonStyles()
+    Loop Max(0, host.tabSlotButtons.Length - tabCount) {
+        i := tabCount + A_Index
+        host.tabSlotButtons[i].Visible := false
+        host.tabSlotPopoutButtons[i].Visible := false
+        host.tabSlotCloseButtons[i].Visible := false
+    }
+
+    UpdateTabButtonStyles(host)
 }
 
-SelectTab(tabId, *) {
-    global g_ActiveTabId, g_TabRecords
+CloseTabClick(host, tabId, *) {
+    CloseTab(host, tabId)
+}
 
-    if !g_TabRecords.Has(tabId)
+PopOutClick(host, tabId, *) {
+    PopOutTab(host, tabId)
+}
+
+MergeBackClick(host, tabId, *) {
+    MergeBackTab(host, tabId)
+}
+
+SelectTab(host, tabId, *) {
+    if !host.tabRecords.Has(tabId)
         return
 
-    g_ActiveTabId := tabId
-    ShowOnlyActiveTab()
-    UpdateStatusText()
-    UpdateHostTitle()
+    host.activeTabId := tabId
+    ShowOnlyActiveTab(host)
+    UpdateHostTitle(host)
 }
 
-ShowOnlyActiveTab() {
-    global g_TabOrder, g_TabRecords, g_ActiveTabId
+PopOutTab(sourceHost, tabId) {
+    global g_MainHost, g_PopoutHosts
 
-    if (g_ActiveTabId != "") && !g_TabRecords.Has(g_ActiveTabId)
-        g_ActiveTabId := ""
-    if (g_ActiveTabId = "") && g_TabOrder.Length
-        g_ActiveTabId := g_TabOrder[1]
+    if !sourceHost.tabRecords.Has(tabId)
+        return
 
-    if g_ActiveTabId = "" {
-        UpdateTabButtonStyles()
+    record := sourceHost.tabRecords[tabId]
+    ; Detach from source (don't restore - we're moving to new host)
+    DetachTrackedWindow(sourceHost, tabId, false, false)
+    UnindexTrackedHwnds(sourceHost, tabId)
+    for idx, currentId in sourceHost.tabOrder {
+        if currentId = tabId {
+            sourceHost.tabOrder.RemoveAt(idx)
+            break
+        }
+    }
+    sourceHost.tabRecords.Delete(tabId)
+    if sourceHost.activeTabId = tabId
+        sourceHost.activeTabId := sourceHost.tabOrder.Length ? sourceHost.tabOrder[1] : ""
+
+    ; Create pop-out host and attach the tab
+    popoutHost := BuildHostInstance(true)
+    popoutHost.tabRecords[tabId] := record
+    popoutHost.tabOrder.Push(tabId)
+    popoutHost.activeTabId := tabId
+
+    if !AttachTrackedWindow(popoutHost, tabId) {
+        ; Failed - restore to source
+        sourceHost.tabRecords[tabId] := record
+        sourceHost.tabOrder.Push(tabId)
+        sourceHost.activeTabId := tabId
+        AttachTrackedWindow(sourceHost, tabId)
+        IndexTrackedHwnds(sourceHost, tabId)
+        g_PopoutHosts.Pop()
+        popoutHost.gui.Destroy()
+        return
+    }
+    IndexTrackedHwnds(popoutHost, tabId)
+
+    ; Position pop-out host side-by-side with source
+    ArrangeHostsSideBySide(sourceHost, popoutHost)
+
+    ; Defer layout to next message pump so we don't move controls under the cursor
+    ; (which can cause a spurious click on the remaining tab's popout button)
+    SetTimer(PopOutTabDeferredLayout.Bind(sourceHost, popoutHost), -1)
+}
+
+PopOutTabDeferredLayout(sourceHost, popoutHost, *) {
+    LayoutTabButtons(sourceHost)
+    ShowOnlyActiveTab(sourceHost)
+    UpdateHostTitle(sourceHost)
+    LayoutTabButtons(popoutHost)
+    ShowOnlyActiveTab(popoutHost)
+    UpdateHostTitle(popoutHost)
+    RedrawHostWindow(sourceHost)
+    RedrawHostWindow(popoutHost)
+}
+
+MergeBackTab(popoutHost, tabId) {
+    global g_MainHost, g_PopoutHosts
+
+    if !popoutHost.tabRecords.Has(tabId) || !popoutHost.isPopout
+        return
+
+    record := popoutHost.tabRecords[tabId]
+    DetachTrackedWindow(popoutHost, tabId, false, false)
+    UnindexTrackedHwnds(popoutHost, tabId)
+    for idx, currentId in popoutHost.tabOrder {
+        if currentId = tabId {
+            popoutHost.tabOrder.RemoveAt(idx)
+            break
+        }
+    }
+    popoutHost.tabRecords.Delete(tabId)
+
+    ; Add to main host
+    g_MainHost.tabRecords[tabId] := record
+    g_MainHost.tabOrder.Push(tabId)
+    if (g_MainHost.activeTabId = "")
+        g_MainHost.activeTabId := tabId
+
+    if !AttachTrackedWindow(g_MainHost, tabId) {
+        ; Failed - put back in popout
+        popoutHost.tabRecords[tabId] := record
+        popoutHost.tabOrder.Push(tabId)
+        popoutHost.activeTabId := tabId
+        AttachTrackedWindow(popoutHost, tabId)
+        IndexTrackedHwnds(popoutHost, tabId)
+        return
+    }
+    IndexTrackedHwnds(g_MainHost, tabId)
+
+    ; Destroy popout host
+    for i, h in g_PopoutHosts {
+        if h = popoutHost {
+            g_PopoutHosts.RemoveAt(i)
+            break
+        }
+    }
+    popoutHost.gui.Destroy()
+
+    LayoutTabButtons(g_MainHost)
+    ShowOnlyActiveTab(g_MainHost)
+    UpdateHostTitle(g_MainHost)
+    RedrawHostWindow(g_MainHost)
+}
+
+ArrangeHostsSideBySide(host1, host2) {
+    try {
+        WinGetPos(&x1, &y1, &w1, &h1, "ahk_id " host1.hwnd)
+        ; Place host2 to the right of host1 with small gap
+        gap := 8
+        x2 := x1 + w1 + gap
+        host2.gui.Show("x" x2 " y" y1 " w" w1 " h" h1)
+    } catch {
+        ; Fallback: just show at default position
+        host2.gui.Show()
+    }
+}
+
+ShowOnlyActiveTab(host) {
+    if (host.activeTabId != "") && !host.tabRecords.Has(host.activeTabId)
+        host.activeTabId := ""
+    if (host.activeTabId = "") && host.tabOrder.Length
+        host.activeTabId := host.tabOrder[1]
+
+    if host.activeTabId = "" {
+        UpdateTabButtonStyles(host)
         return
     }
 
-    GetEmbedRect(&areaX, &areaY, &areaW, &areaH)
+    GetEmbedRect(host, &areaX, &areaY, &areaW, &areaH)
 
-    for tabId in g_TabOrder {
-        if !g_TabRecords.Has(tabId)
+    for tabId in host.tabOrder {
+        if !host.tabRecords.Has(tabId)
             continue
 
-        record := g_TabRecords[tabId]
-        if !WinExist("ahk_id " record.contentHwnd)
+        record := host.tabRecords[tabId]
+        if !IsWindowExists(record.contentHwnd)
             continue
 
-        if tabId = g_ActiveTabId {
+        if tabId = host.activeTabId {
             flags := 0x0020 | 0x0004 | 0x0010
             DllCall("SetWindowPos", "ptr", record.contentHwnd, "ptr", 0
                 , "int", areaX, "int", areaY, "int", areaW, "int", areaH
@@ -645,55 +937,70 @@ ShowOnlyActiveTab() {
         }
     }
 
-    UpdateTabButtonStyles()
+    UpdateTabButtonStyles(host)
 }
 
-UpdateTabButtonStyles() {
-    global g_TabButtons, g_ActiveTabId, g_TabRecords
-
-    for tabId, ctrl in g_TabButtons {
-        title := g_TabRecords.Has(tabId) ? ShortTitle(g_TabRecords[tabId].title, 26) : "Window"
-        if tabId = g_ActiveTabId {
+UpdateTabButtonStyles(host) {
+    for tabId, ctrl in host.tabButtons {
+        title := host.tabRecords.Has(tabId) ? ShortTitle(host.tabRecords[tabId].title, 20) : "Window"
+        if tabId = host.activeTabId {
             ctrl.Text := title
             ctrl.SetFont("s9 Bold", "Segoe UI Semibold")
             ctrl.Opt("Background0x2D7DFF cFFFFFF")
+            if host.tabCloseButtons.Has(tabId)
+                host.tabCloseButtons[tabId].Opt("Background0x2D7DFF cFFFFFF")
+            if host.tabPopoutButtons.Has(tabId)
+                host.tabPopoutButtons[tabId].Opt("Background0x2D7DFF cFFFFFF")
         } else {
             ctrl.Text := title
             ctrl.SetFont("s9 Norm", "Segoe UI")
             ctrl.Opt("Background0x30343B cD8DEE9")
+            if host.tabCloseButtons.Has(tabId)
+                host.tabCloseButtons[tabId].Opt("Background0x30343B cAAAAAA")
+            if host.tabPopoutButtons.Has(tabId)
+                host.tabPopoutButtons[tabId].Opt("Background0x30343B cAAAAAA")
         }
     }
 }
 
+; Placeholder for future status-bar display; g_StatusText control exists but is hidden.
 UpdateStatusText() {
-    return
 }
 
-UpdateHostTitle() {
-    global g_HostGui, g_HostTitle, g_TabOrder, g_ActiveTabId, g_TabRecords
+UpdateHostTitle(host) {
+    global g_HostTitle
 
-    if !g_HostGui
+    if !host || !host.gui
         return
 
-    if (g_ActiveTabId != "") && g_TabRecords.Has(g_ActiveTabId)
-        g_HostGui.Title := g_HostTitle . " (" g_TabOrder.Length ") - " . g_TabRecords[g_ActiveTabId].title
+    liveCount := 0
+    for tabId in host.tabOrder {
+        if host.tabRecords.Has(tabId) && IsWindowExists(host.tabRecords[tabId].contentHwnd)
+            liveCount++
+    }
+    if host.isPopout
+        suffix := " (popped out)"
     else
-        g_HostGui.Title := g_HostTitle . " (" g_TabOrder.Length ")"
+        suffix := ""
+    if (host.activeTabId != "") && host.tabRecords.Has(host.activeTabId)
+        host.gui.Title := g_HostTitle . " (" liveCount ") - " . host.tabRecords[host.activeTabId].title . suffix
+    else
+        host.gui.Title := g_HostTitle . " (" liveCount ")" . suffix
 }
 
-GetEmbedRect(&x, &y, &w, &h) {
-    global g_HostHwnd, g_HostWidth, g_HostHeight, g_HostPadding, g_HeaderHeight
+GetEmbedRect(host, &x, &y, &w, &h) {
+    global g_HostWidth, g_HostHeight, g_HostPadding, g_HeaderHeight
 
     x := g_HostPadding
     y := g_HeaderHeight + g_HostPadding
 
-    if g_HostHwnd && WinExist("ahk_id " g_HostHwnd) {
+    if host.hwnd && WinExist("ahk_id " host.hwnd) {
         try {
             clientX := 0
             clientY := 0
             clientW := 0
             clientH := 0
-            WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " g_HostHwnd)
+            WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " host.hwnd)
             w := Max(200, clientW - (g_HostPadding * 2))
             h := Max(140, clientH - y - g_HostPadding)
             return
@@ -705,22 +1012,19 @@ GetEmbedRect(&x, &y, &w, &h) {
 }
 
 CleanupAll(*) {
-    global g_TabOrder, g_IsCleaningUp, g_PendingCandidates, g_HwndToTabId
+    global g_MainHost, g_PopoutHosts, g_IsCleaningUp, g_PendingCandidates
 
     if g_IsCleaningUp
         return
 
     g_IsCleaningUp := true
 
-    restoreList := []
-    for tabId in g_TabOrder
-        restoreList.Push(tabId)
-
-    for tabId in restoreList
-        RemoveTrackedTab(tabId, true)
+    for host in GetAllHosts() {
+        for tabId in host.tabOrder.Clone()
+            RemoveTrackedTab(host, tabId, true)
+    }
 
     g_PendingCandidates := Map()
-    g_HwndToTabId := Map()
     g_IsCleaningUp := false
 }
 
@@ -828,6 +1132,14 @@ RedrawEmbeddedWindow(hwnd) {
     DllCall("RedrawWindow", "ptr", hwnd, "ptr", 0, "ptr", 0, "uint", flags)
 }
 
+RedrawHostWindow(host) {
+    if !host || !host.hwnd
+        return
+
+    flags := 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400
+    DllCall("RedrawWindow", "ptr", host.hwnd, "ptr", 0, "ptr", 0, "uint", flags)
+}
+
 AppendDebugLog(text) {
     global g_DebugLogPath
     FileAppend("[" FormatTime(, "yyyy-MM-dd HH:mm:ss") "]`r`n" text, g_DebugLogPath, "UTF-8")
@@ -855,16 +1167,14 @@ ShortTitle(title, maxLen := 28) {
     return SubStr(title, 1, maxLen - 1) . "..."
 }
 
-CycleTabs(direction) {
-    global g_TabOrder, g_ActiveTabId
-
-    count := g_TabOrder.Length
+CycleTabs(host, direction) {
+    count := host.tabOrder.Length
     if count < 2
         return
 
     currentIndex := 0
-    for idx, tabId in g_TabOrder {
-        if tabId = g_ActiveTabId {
+    for idx, tabId in host.tabOrder {
+        if tabId = host.activeTabId {
             currentIndex := idx
             break
         }
@@ -879,16 +1189,18 @@ CycleTabs(direction) {
     else if nextIndex < 1
         nextIndex := count
 
-    SelectTab(g_TabOrder[nextIndex])
+    SelectTab(host, host.tabOrder[nextIndex])
 }
 
 StackTabsHostIsActive() {
-    global g_HostHwnd
+    return !!GetActiveStackTabsHost()
+}
 
-    if !g_HostHwnd
-        return false
-
-    return WinActive("ahk_id " g_HostHwnd)
+GetActiveStackTabsHost() {
+    activeHwnd := WinGetID("A")
+    if !activeHwnd
+        return ""
+    return GetHostForHwnd(activeHwnd)
 }
 
 SafeWinGetTitle(hwnd) {
@@ -933,4 +1245,3 @@ SetWindowLongPtrValue(hwnd, index, value) {
         return DllCall("SetWindowLongPtr", "ptr", hwnd, "int", index, "ptr", value, "ptr")
     return DllCall("SetWindowLong", "ptr", hwnd, "int", index, "ptr", value, "ptr")
 }
-
