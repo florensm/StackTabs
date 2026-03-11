@@ -35,7 +35,6 @@ g_WindowTitleMatch := "Excel"            ; Excel workbooks
 | Hotkey | Action |
 |--------|--------|
 | `Win+Shift+T` | Show/hide the collector window |
-| `Win+Shift+R` | Restore all windows and exit (saves work before reload) |
 | `Win+Shift+D` | Dump discovery scan to debug file |
 | `Ctrl+Tab` | Next tab (when StackTabs is focused) |
 | `Ctrl+Shift+Tab` | Previous tab (when StackTabs is focused) |
@@ -45,9 +44,9 @@ g_WindowTitleMatch := "Excel"            ; Excel workbooks
 
 ## Window restoration
 
-When you stop or reload the script, all embedded windows are restored to their original position and state. Use **Win+Shift+R** before reloading to restore windows cleanly and avoid work loss.
+When you stop or reload the script, all embedded windows are restored to their original position and state.
 
-> If the script crashes or is force-killed, embedded windows may be lost (Windows destroys child windows when the parent process exits). Use Win+Shift+R to restore before restarting when possible.
+> If the script crashes or is force-killed, embedded windows may be lost (Windows destroys child windows when the parent process exits).
 
 ## Configuration
 

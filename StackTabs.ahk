@@ -63,12 +63,6 @@ SetTimer(RefreshWindows, g_RefreshInterval)
     DumpDiscoveryDebug()
 }
 
-; Win+Shift+R restores all windows and exits (use before reload to avoid work loss).
-#+r:: {
-    CleanupAll()
-    ExitApp()
-}
-
 #HotIf StackTabsHostIsActive()
 ^Tab:: {
     host := GetActiveStackTabsHost()
