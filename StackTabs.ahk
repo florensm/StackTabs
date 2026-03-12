@@ -53,6 +53,40 @@ g_TitleBarHeight       := 28
 
 ; Diagnostics.
 g_DebugLogPath := A_ScriptDir "\StackTabs-discovery.txt"
+; #region agent log
+g_AgentLogPath := A_ScriptDir "\debug-3e799a.log"
+AgentLog(location, message, data, hypothesisId) {
+    global g_AgentLogPath
+    try {
+        dataStr := ""
+        for k, v in data {
+            escK := StrReplace(StrReplace(StrReplace(k, "\", "\\"), '"', '\"'), "`n", "\n")
+            if (v is "Integer" || v is "Float")
+                dataStr .= '"' escK '":' v ','
+            else {
+                escV := StrReplace(StrReplace(StrReplace(String(v), "\", "\\"), '"', '\"'), "`n", "\n")
+                dataStr .= '"' escK '":"' escV '",'
+            }
+        }
+        dataStr := RTrim(dataStr, ",")
+        line := '{"sessionId":"3e799a","location":"' location '","message":"' message '","timestamp":' A_TickCount ',"hypothesisId":"' hypothesisId '","data":{' dataStr '}}' "`n"
+        FileAppend(line, g_AgentLogPath, "UTF-8")
+    }
+}
+FocusLog(operation, data, hypothesisId) {
+    try {
+        activeHwnd := WinGetID("A")
+        host := GetHostForHwnd(activeHwnd)
+        isStackTabs := !!host
+        data["activeHwnd"] := activeHwnd
+        data["isStackTabs"] := isStackTabs
+        data["activeTitle"] := SafeWinGetTitle(activeHwnd)
+        AgentLog("FocusLog:" operation, "focus_check", data, hypothesisId)
+    } catch {
+        AgentLog("FocusLog:" operation, "focus_check", data, hypothesisId)
+    }
+}
+; #endregion
 
 LoadConfigFromIni() {
     iniPath := A_ScriptDir "\StackTabs.ini"
@@ -147,8 +181,6 @@ g_MainHost := ""             ; HostInstance for main window
 g_PopoutHosts := []          ; array of HostInstance for popped-out windows
 g_PendingCandidates := Map() ; tabId -> {firstSeen, candidate} (main host only)
 g_IsCleaningUp := false
-g_TabHoveredHost := ""       ; host with hovered tab
-g_TabHoveredId := ""         ; tabId being hovered
 
 LoadConfigFromIni()
 ApplyThemePreset()
@@ -203,63 +235,6 @@ SetTimer(RefreshWindows, g_RefreshInterval)
 }
 #HotIf
 
-OnMessage(0x200, TabHoverMouseMove)
-OnMessage(0x6, TabHoverActivate)
-
-TabHoverActivate(wParam, lParam, msg, hwnd) {
-    ; WM_ACTIVATE: wParam=0 means window is being deactivated
-    if (wParam = 0) {
-        global g_TabHoveredHost, g_TabHoveredId
-        host := GetHostForHwnd(hwnd)
-        if host = g_TabHoveredHost {
-            g_TabHoveredHost := ""
-            g_TabHoveredId := ""
-            if host && IsObject(host) && host.HasProp("tabButtons") && WinExist("ahk_id " host.hwnd)
-                UpdateTabButtonStyles(host)
-        }
-    }
-}
-
-TabHoverMouseMove(wParam, lParam, msg, hwnd) {
-    global g_TabHoveredHost, g_TabHoveredId
-    host := GetHostForHwnd(hwnd)
-    if !host || !IsObject(host) || !host.HasProp("tabButtons") || !host.tabButtons.Count
-        return
-    x := (lParam & 0xFFFF)
-    y := (lParam >> 16) & 0xFFFF
-    hoveredTabId := ""
-    for tabId, ctrl in host.tabButtons {
-        ctrl.GetPos(&cx, &cy, &cw, &ch)
-        if (x >= cx && x < cx + cw && y >= cy && y < cy + ch) {
-            hoveredTabId := tabId
-            break
-        }
-        if host.tabCloseButtons.Has(tabId) {
-            host.tabCloseButtons[tabId].GetPos(&cx, &cy, &cw, &ch)
-            if (x >= cx && x < cx + cw && y >= cy && y < cy + ch) {
-                hoveredTabId := tabId
-                break
-            }
-        }
-        if host.tabPopoutButtons.Has(tabId) {
-            host.tabPopoutButtons[tabId].GetPos(&cx, &cy, &cw, &ch)
-            if (x >= cx && x < cx + cw && y >= cy && y < cy + ch) {
-                hoveredTabId := tabId
-                break
-            }
-        }
-    }
-    if (hoveredTabId = g_TabHoveredId && host = g_TabHoveredHost)
-        return
-    prevHost := g_TabHoveredHost
-    g_TabHoveredHost := host
-    g_TabHoveredId := hoveredTabId
-    if prevHost && IsObject(prevHost) && prevHost.HasProp("tabButtons") && WinExist("ahk_id " prevHost.hwnd)
-        UpdateTabButtonStyles(prevHost)
-    if host && IsObject(host) && host.HasProp("tabButtons") && WinExist("ahk_id " host.hwnd)
-        UpdateTabButtonStyles(host)
-}
-
 TitleBarDragClick(host, *) {
     MouseGetPos(&mx, &my)
     lParam := (mx & 0xFFFF) | (my << 16)
@@ -267,12 +242,8 @@ TitleBarDragClick(host, *) {
 }
 
 TitleBarCloseClick(host, *) {
-    global g_PopoutHosts, g_TabHoveredHost, g_TabHoveredId
+    global g_PopoutHosts
     if host.isPopout {
-        if g_TabHoveredHost = host {
-            g_TabHoveredHost := ""
-            g_TabHoveredId := ""
-        }
         for tabId in host.tabOrder.Clone()
             RemoveTrackedTab(host, tabId, true)
         for i, h in g_PopoutHosts {
@@ -290,6 +261,25 @@ TitleBarCloseClick(host, *) {
 
 IsWindowExists(hwnd) {
     return !!DllCall("IsWindow", "ptr", hwnd, "int")
+}
+
+; Close a window reliably (WPF/owned windows may ignore PostMessage; SendMessage waits for processing)
+CloseWindowReliably(topHwnd, contentHwnd := "") {
+    if !contentHwnd
+        contentHwnd := topHwnd
+    prevHidden := A_DetectHiddenWindows
+    DetectHiddenWindows(true)
+    try {
+        for hwnd in [topHwnd, contentHwnd] {
+            if !hwnd || !WinExist("ahk_id " hwnd)
+                continue
+            ; SendMessage (synchronous) - more reliable cross-process than PostMessage for WPF
+            try SendMessage(0x0112, 0xF060, 0,, "ahk_id " hwnd,,,, 2000)  ; WM_SYSCOMMAND SC_CLOSE
+            try SendMessage(0x0010, 0, 0,, "ahk_id " hwnd,,,, 2000)       ; WM_CLOSE
+        }
+    } finally {
+        DetectHiddenWindows(prevHidden)
+    }
 }
 
 GetClientWidth(hwnd) {
@@ -316,9 +306,17 @@ GetAllHosts() {
 }
 
 GetHostForHwnd(hwnd) {
-    for host in GetAllHosts() {
-        if host.hwnd = hwnd
-            return host
+    current := hwnd
+    while current {
+        for host in GetAllHosts() {
+            if host.hwnd = current
+                return host
+            for tabId, record in host.tabRecords {
+                if (record.contentHwnd = current || record.topHwnd = current)
+                    return host
+            }
+        }
+        current := DllCall("GetParent", "ptr", current, "ptr")
     }
     return ""
 }
@@ -345,7 +343,6 @@ BuildHostInstance(isPopout := false) {
     host.isPopout := isPopout
     host.tabRecords := Map()
     host.tabOrder := []
-    host.hwndToTabId := Map()
     host.activeTabId := ""
     host.tabButtons := Map()
     host.tabCloseButtons := Map()
@@ -385,7 +382,6 @@ BuildHostInstance(isPopout := false) {
     host.contentBorderBottom := host.gui.Add("Text", "Hidden x0 y0 w0 h1 Background" g_ThemeContentBorder, "")
     host.contentBorderLeft := host.gui.Add("Text", "Hidden x0 y0 w1 h0 Background" g_ThemeContentBorder, "")
     host.contentBorderRight := host.gui.Add("Text", "Hidden x0 y0 w1 h0 Background" g_ThemeContentBorder, "")
-    host.statusText := host.gui.Add("Text", "Hidden x0 y0 w0 h0", "")
     host.hwnd := host.gui.Hwnd
     host.clientHwnd := host.hwnd
     host.gui.Show("w" g_HostWidth " h" g_HostHeight)
@@ -429,6 +425,16 @@ RefreshWindows(*) {
     if !g_MainHost || g_IsCleaningUp
         return
 
+    ; #region agent log
+    try {
+        refreshStartActive := WinGetID("A")
+        refreshStartIsStackTabs := !!GetHostForHwnd(refreshStartActive)
+    } catch {
+        refreshStartActive := 0
+        refreshStartIsStackTabs := false
+    }
+    ; #endregion
+
     now := A_TickCount
 
     ; Update all hosts: keep tabs alive, check for stale tabs
@@ -466,6 +472,9 @@ RefreshWindows(*) {
 
                 if !g_PendingCandidates.Has(candidate.id) {
                     g_PendingCandidates[candidate.id] := {firstSeen: now, candidate: candidate}
+                    ; #region agent log
+                    AgentLog("StackTabs.ahk:RefreshWindows", "New pending candidate", Map("id", candidate.id, "tabOrderLen", host.tabOrder.Length), "H1")
+                    ; #endregion
                     AppendDebugLog("New candidate`r`n" candidate.hierarchySummary "`r`n")
                     continue
                 }
@@ -476,16 +485,29 @@ RefreshWindows(*) {
                     normalizedTitle := NormalizeTitle(candidate.title)
                     match := (normalizedTitle != "") ? FindTabByNormalizedTitle(normalizedTitle) : ""
                     if match {
-                        CloseTab(match.host, match.tabId)
-                        if CreateTrackedTab(host, candidate) {
-                            host.activeTabId := candidate.id
-                            ShowOnlyActiveTab(host)
+                        ; Duplicate ticket: close the extra window, keep existing tab
+                        CloseWindowReliably(candidate.topHwnd, candidate.contentHwnd)
+                        ; Switch to the existing tab
+                        match.host.activeTabId := match.tabId
+                        ShowOnlyActiveTab(match.host)
+                        UpdateHostTitle(match.host)
+                        ; Restore focus: closing owned window gives focus to owner (main App)
+                        try WinActivate("ahk_id " match.host.hwnd)
+                        if match.host = host
                             structureChanged := true
-                        }
                     } else if CreateTrackedTab(host, candidate) {
+                        ; #region agent log
+                        AgentLog("StackTabs.ahk:RefreshWindows", "Captured (new)", Map("id", candidate.id), "H5")
+                        ; #endregion
                         host.activeTabId := candidate.id
                         ShowOnlyActiveTab(host)
+                        ; Restore focus: embedding steals focus to owner (main App)
+                        try WinActivate("ahk_id " host.hwnd)
                         structureChanged := true
+                    } else {
+                        ; #region agent log
+                        AgentLog("StackTabs.ahk:RefreshWindows", "CreateTrackedTab FAILED (new)", Map("id", candidate.id), "H5")
+                        ; #endregion
                     }
                     g_PendingCandidates.Delete(candidate.id)
                 }
@@ -496,8 +518,12 @@ RefreshWindows(*) {
                 if !currentIds.Has(tabId)
                     stalePending.Push(tabId)
             }
-            for tabId in stalePending
+            for tabId in stalePending {
+                ; #region agent log
+                AgentLog("StackTabs.ahk:RefreshWindows", "Stale pending removed", Map("tabId", tabId, "tabOrderLen", host.tabOrder.Length), "H1")
+                ; #endregion
                 g_PendingCandidates.Delete(tabId)
+            }
         }
 
         ; Stale tab cleanup for this host
@@ -531,11 +557,24 @@ RefreshWindows(*) {
         ShowOnlyActiveTab(host)
         UpdateHostTitle(host)
     }
+
+    ; #region agent log
+    try {
+        refreshEndActive := WinGetID("A")
+        refreshEndIsStackTabs := !!GetHostForHwnd(refreshEndActive)
+        if (refreshStartIsStackTabs && !refreshEndIsStackTabs) {
+            AgentLog("RefreshWindows:END", "FOCUS_LOST", Map("startHwnd", refreshStartActive, "endHwnd", refreshEndActive, "endTitle", SafeWinGetTitle(refreshEndActive)), "A")
+        }
+    } catch {
+    }
+    ; #endregion
 }
 
 DiscoverCandidateTickets() {
     candidates := []
     seenIds := Map()
+    static logCounter := 0
+    logCounter++
 
     ; Build set of all embedded HWNDs (content + top) across all hosts
     embeddedHwnds := Map()
@@ -549,16 +588,28 @@ DiscoverCandidateTickets() {
         }
     }
 
-    for hwnd in WinGetList() {
+    winList := WinGetList()
+    winCount := winList.Length
+    embeddedCount := embeddedHwnds.Count
+    skipEmbedded := 0
+    skipNoCandidate := 0
+    skipContentEmbedded := 0
+    skipSeen := 0
+
+    for hwnd in winList {
         if embeddedHwnds.Has(hwnd "")
             continue
 
         candidate := BuildCandidateFromTopWindow(hwnd)
-        if !IsObject(candidate)
+        if !IsObject(candidate) {
+            skipNoCandidate++
             continue
+        }
         ; Skip if this candidate's content/top is already embedded anywhere
-        if embeddedHwnds.Has(candidate.contentHwnd "")
+        if embeddedHwnds.Has(candidate.contentHwnd "") {
+            skipContentEmbedded++
             continue
+        }
         if embeddedHwnds.Has(candidate.topHwnd "")
             continue
         if seenIds.Has(candidate.id)
@@ -567,6 +618,11 @@ DiscoverCandidateTickets() {
         seenIds[candidate.id] := true
         candidates.Push(candidate)
     }
+
+    ; #region agent log
+    if (Mod(logCounter, 10) = 0 || candidates.Length > 0)
+        AgentLog("StackTabs.ahk:DiscoverCandidateTickets", "Discovery result", Map("winCount", winCount, "embeddedCount", embeddedCount, "candidatesCount", candidates.Length, "skipNoCandidate", skipNoCandidate, "skipContentEmbedded", skipContentEmbedded), "H1")
+    ; #endregion
 
     return candidates
 }
@@ -577,12 +633,21 @@ BuildCandidateFromTopWindow(topHwnd) {
     try {
         if !WinExist("ahk_id " topHwnd)
             return ""
-        if !DllCall("IsWindowVisible", "ptr", topHwnd)
-            return ""
-
         title := WinGetTitle("ahk_id " topHwnd)
-        if (title = "")
+        if !DllCall("IsWindowVisible", "ptr", topHwnd) {
+            ; #region agent log
+            if (g_WindowTitleMatch != "" && InStr(title, g_WindowTitleMatch, false))
+                AgentLog("StackTabs.ahk:BuildCandidateFromTopWindow", "Skip: not visible", Map("hwnd", topHwnd, "title", title), "H1")
+            ; #endregion
             return ""
+        }
+        if (title = "") {
+            ; #region agent log
+            if (g_WindowTitleMatch != "")
+                AgentLog("StackTabs.ahk:BuildCandidateFromTopWindow", "Skip: empty title", Map("hwnd", topHwnd), "H2")
+            ; #endregion
+            return ""
+        }
         if (g_WindowTitleMatch != "") && !InStr(title, g_WindowTitleMatch, false)
             return ""
 
@@ -591,8 +656,12 @@ BuildCandidateFromTopWindow(topHwnd) {
             return ""
 
         WinGetPos(, , &w, &h, "ahk_id " topHwnd)
-        if (w < 120 || h < 80)
+        if (w < 120 || h < 80) {
+            ; #region agent log
+            AgentLog("StackTabs.ahk:BuildCandidateFromTopWindow", "Skip: size too small", Map("hwnd", topHwnd, "title", title, "w", w, "h", h), "H3")
+            ; #endregion
             return ""
+        }
 
         contentHwnd := FindStableContentWindow(topHwnd)
         if !contentHwnd
@@ -701,7 +770,6 @@ CreateTrackedTab(host, candidate) {
         return false
     }
 
-    IndexTrackedHwnds(host, candidate.id)
     host.tabOrder.Push(candidate.id)
     if (host.activeTabId = "")
         host.activeTabId := candidate.id
@@ -762,12 +830,10 @@ RebindTrackedTab(host, tabId, candidate) {
         return
 
     DetachTrackedWindow(host, tabId, false, false)
-    UnindexTrackedHwnds(host, tabId)
 
     record := BuildTrackedRecord(candidate)
     host.tabRecords[tabId] := record
     AttachTrackedWindow(host, tabId)
-    IndexTrackedHwnds(host, tabId)
     AppendDebugLog("Rebound tab: " tabId "`r`n" candidate.hierarchySummary "`r`n")
 }
 
@@ -777,11 +843,20 @@ CloseTab(host, tabId) {
 
     record := host.tabRecords[tabId]
     topHwnd := record.topHwnd
+    contentHwnd := record.contentHwnd
+    ; #region agent log
+    AgentLog("StackTabs.ahk:CloseTab", "Closing tab", Map("tabId", tabId, "remainingTabs", host.tabOrder.Length - 1), "H1")
+    ; #endregion
+    ; Close before detach - window may process close better while still embedded
+    CloseWindowReliably(topHwnd, contentHwnd)
     RemoveTrackedTab(host, tabId, false)
-    if WinExist("ahk_id " topHwnd)
-        WinClose("ahk_id " topHwnd)
 
     SetTimer(CloseTabDeferredUpdate.Bind(host), -1)
+}
+
+ActivateHostAfterClose(host, *) {
+    if host.tabOrder.Length > 0 && WinExist("ahk_id " host.hwnd)
+        try WinActivate("ahk_id " host.hwnd)
 }
 
 CloseTabDeferredUpdate(host, *) {
@@ -790,6 +865,12 @@ CloseTabDeferredUpdate(host, *) {
     ShowOnlyActiveTab(host)
     UpdateHostTitle(host)
     RedrawHostWindow(host)
+    ; Restore focus: closing owned window gives focus to owner (main App).
+    ; PostMessage is async—close may complete after this runs; re-activate once more.
+    if host.tabOrder.Length > 0 {
+        try WinActivate("ahk_id " host.hwnd)
+        SetTimer(ActivateHostAfterClose.Bind(host), -100)
+    }
     ; Destroy empty popout
     if host.isPopout && host.tabOrder.Length = 0 {
         for i, h in g_PopoutHosts {
@@ -812,7 +893,6 @@ RemoveTrackedTab(host, tabId, restoreWindow := true) {
         return
 
     DetachTrackedWindow(host, tabId, restoreWindow, true)
-    UnindexTrackedHwnds(host, tabId)
 
     for idx, currentId in host.tabOrder {
         if currentId = tabId {
@@ -836,6 +916,10 @@ AttachTrackedWindow(host, tabId) {
 
     if !WinExist("ahk_id " hwnd)
         return false
+
+    ; #region agent log
+    FocusLog("AttachBefore", Map("tabId", tabId, "contentHwnd", hwnd), "B")
+    ; #endregion
 
     if (record.topHwnd != hwnd) && WinExist("ahk_id " record.topHwnd) {
         record.sourceWasHidden := true
@@ -864,6 +948,9 @@ AttachTrackedWindow(host, tabId) {
     DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", 0, "int", 0, "int", 100, "int", 100, "uint", flags)
     DllCall("ShowWindow", "ptr", hwnd, "int", 0)
     RedrawEmbeddedWindow(hwnd)
+    ; #region agent log
+    FocusLog("AttachAfter", Map("tabId", tabId, "contentHwnd", hwnd), "B")
+    ; #endregion
     return true
 }
 
@@ -913,26 +1000,6 @@ TransferTrackedWindow(sourceHost, destHost, tabId) {
     DllCall("ShowWindow", "ptr", hwnd, "int", 4)
     RedrawEmbeddedWindow(hwnd)
     return true
-}
-
-IndexTrackedHwnds(host, tabId) {
-    if !host.tabRecords.Has(tabId)
-        return
-
-    record := host.tabRecords[tabId]
-    host.hwndToTabId[record.contentHwnd] := tabId
-    if record.topHwnd != record.contentHwnd
-        host.hwndToTabId[record.topHwnd] := tabId
-}
-
-UnindexTrackedHwnds(host, tabId) {
-    if !host.tabRecords.Has(tabId)
-        return
-
-    record := host.tabRecords[tabId]
-    TryDeleteMapKey(host.hwndToTabId, record.contentHwnd)
-    if record.topHwnd != record.contentHwnd
-        TryDeleteMapKey(host.hwndToTabId, record.topHwnd)
 }
 
 LayoutTabButtons(host, windowWidth := 0) {
@@ -1083,7 +1150,6 @@ PopOutTab(sourceHost, tabId) {
     popoutHost.activeTabId := tabId
 
     ; Remove from source
-    UnindexTrackedHwnds(sourceHost, tabId)
     for idx, currentId in sourceHost.tabOrder {
         if currentId = tabId {
             sourceHost.tabOrder.RemoveAt(idx)
@@ -1096,20 +1162,13 @@ PopOutTab(sourceHost, tabId) {
 
     if !TransferTrackedWindow(sourceHost, popoutHost, tabId) {
         ; Failed - window never moved, restore data structures
-        global g_TabHoveredHost, g_TabHoveredId
-        if g_TabHoveredHost = popoutHost {
-            g_TabHoveredHost := ""
-            g_TabHoveredId := ""
-        }
         sourceHost.tabRecords[tabId] := record
         sourceHost.tabOrder.Push(tabId)
         sourceHost.activeTabId := tabId
-        IndexTrackedHwnds(sourceHost, tabId)
         g_PopoutHosts.Pop()
         popoutHost.gui.Destroy()
         return
     }
-    IndexTrackedHwnds(popoutHost, tabId)
 
     ; Position pop-out host side-by-side with source
     ArrangeHostsSideBySide(sourceHost, popoutHost)
@@ -1145,7 +1204,6 @@ MergeBackTab(popoutHost, tabId) {
         g_MainHost.activeTabId := tabId
 
     ; Remove from popout
-    UnindexTrackedHwnds(popoutHost, tabId)
     for idx, currentId in popoutHost.tabOrder {
         if currentId = tabId {
             popoutHost.tabOrder.RemoveAt(idx)
@@ -1168,17 +1226,10 @@ MergeBackTab(popoutHost, tabId) {
         popoutHost.tabRecords[tabId] := record
         popoutHost.tabOrder.Push(tabId)
         popoutHost.activeTabId := tabId
-        IndexTrackedHwnds(popoutHost, tabId)
         return
     }
-    IndexTrackedHwnds(g_MainHost, tabId)
 
     ; Destroy popout host
-    global g_TabHoveredHost, g_TabHoveredId
-    if g_TabHoveredHost = popoutHost {
-        g_TabHoveredHost := ""
-        g_TabHoveredId := ""
-    }
     for i, h in g_PopoutHosts {
         if h = popoutHost {
             g_PopoutHosts.RemoveAt(i)
@@ -1248,12 +1299,18 @@ ShowOnlyActiveTab(host) {
             continue
 
         if tabId = host.activeTabId {
+            ; #region agent log
+            FocusLog("ShowTabBefore", Map("tabId", tabId, "contentHwnd", record.contentHwnd), "A")
+            ; #endregion
             flags := 0x0020 | 0x0004 | 0x0010
             DllCall("SetWindowPos", "ptr", record.contentHwnd, "ptr", 0
                 , "int", areaX, "int", areaY, "int", areaW, "int", areaH
                 , "uint", flags)
             DllCall("ShowWindow", "ptr", record.contentHwnd, "int", 4)
             RedrawEmbeddedWindow(record.contentHwnd)
+            ; #region agent log
+            FocusLog("ShowTabAfter", Map("tabId", tabId), "A")
+            ; #endregion
         } else {
             DllCall("ShowWindow", "ptr", record.contentHwnd, "int", 0)
         }
@@ -1263,14 +1320,12 @@ ShowOnlyActiveTab(host) {
 }
 
 UpdateTabButtonStyles(host) {
-    global g_ThemeTabActiveBg, g_ThemeTabActiveText, g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover
+    global g_ThemeTabActiveBg, g_ThemeTabActiveText, g_ThemeTabInactiveBg
     global g_ThemeTabInactiveText, g_ThemeIconColor, g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize
-    global g_TabHoveredHost, g_TabHoveredId
     if !host || !IsObject(host) || !host.HasProp("tabButtons") || !host.tabButtons
         return
     if !host.hwnd || !WinExist("ahk_id " host.hwnd)
         return
-    isHovered := (host = g_TabHoveredHost)
     for tabId, ctrl in host.tabButtons {
         title := host.tabRecords.Has(tabId) ? ShortTitle(host.tabRecords[tabId].title, 20) : "Window"
         if tabId = host.activeTabId {
@@ -1284,18 +1339,13 @@ UpdateTabButtonStyles(host) {
         } else {
             ctrl.Text := title
             ctrl.SetFont("s" g_ThemeFontSize " Norm", g_ThemeFontName)
-            inactiveBg := (isHovered && tabId = g_TabHoveredId) ? g_ThemeTabInactiveBgHover : g_ThemeTabInactiveBg
-            ctrl.Opt("Background0x" inactiveBg " c" g_ThemeTabInactiveText)
+            ctrl.Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeTabInactiveText)
             if host.tabCloseButtons.Has(tabId)
-                host.tabCloseButtons[tabId].Opt("Background0x" inactiveBg " c" g_ThemeIconColor)
+                host.tabCloseButtons[tabId].Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeIconColor)
             if host.tabPopoutButtons.Has(tabId)
-                host.tabPopoutButtons[tabId].Opt("Background0x" inactiveBg " c" g_ThemeIconColor)
+                host.tabPopoutButtons[tabId].Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeIconColor)
         }
     }
-}
-
-; Placeholder for future status-bar display; g_StatusText control exists but is hidden.
-UpdateStatusText() {
 }
 
 UpdateHostTitle(host) {
@@ -1552,11 +1602,6 @@ SafeWinGetProcessName(hwnd) {
     try return WinGetProcessName("ahk_id " hwnd)
     catch
         return ""
-}
-
-TryDeleteMapKey(mapObj, key) {
-    if mapObj.Has(key)
-        mapObj.Delete(key)
 }
 
 GetWindowClassName(hwnd) {
