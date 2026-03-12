@@ -1,0 +1,49 @@
+; StackTabs configuration
+; Copy this file to StackTabs.ini and edit as needed.
+
+[General]
+WindowTitleMatch=Ticket details
+TargetExe=
+RefreshInterval=200
+CaptureDelayMs=900
+TabDisappearGraceMs=300
+
+[Layout]
+HostTitle=StackTabs
+HostWidth=1200
+HostHeight=800
+HostMinWidth=700
+HostMinHeight=500
+HostPadding=8
+HeaderHeight=44
+TabGap=6
+MinTabWidth=120
+MaxTabWidth=240
+TabHeight=30
+TabSlotMax=20
+CloseButtonWidth=22
+PopoutButtonWidth=22
+TabBarOffsetY=7
+UseCustomTitleBar=0
+TitleBarHeight=28
+
+[Theme]
+; Preset: dark, light, or high-contrast (overrides individual colors when set)
+; dark: Background 1E1E1E, TabBar 252526, Active 2D7DFF, Inactive 30343B, Text FFFFFF/D8DEE9
+; light: Background F3F3F3, TabBar E8E8E8, Active 0078D4, Inactive E1E1E1, Text 333333
+; high-contrast: Background 000000, TabBar 1A1A1A, Active FFFF00, Inactive 333333, Text FFFFFF/000000
+Preset=dark
+Background=1E1E1E
+TabBarBg=252526
+TabActiveBg=2D7DFF
+TabActiveText=FFFFFF
+TabInactiveBg=30343B
+TabInactiveBgHover=3C4049
+TabInactiveText=D8DEE9
+IconColor=AAAAAA
+ContentBorder=404040
+WindowText=FFFFFF
+FontName=Segoe UI
+FontNameTab=Segoe UI Semibold
+FontSize=9
+FontSizeClose=10
