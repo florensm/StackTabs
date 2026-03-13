@@ -80,11 +80,7 @@ LoadConfigFromIni() {
     global g_HostPadding, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
     global g_TabSlotMax, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY, g_TabPosition
     global g_TitleStripPatterns, g_TabTitleMaxLen
-    global g_ThemeBackground, g_ThemeTabBarBg, g_ThemeTabActiveBg, g_ThemeTabActiveText
-    global g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover, g_ThemeTabInactiveText, g_ThemeIconColor, g_ThemeContentBorder
-    global g_ThemeWindowText, g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeFontSizeClose
-    global g_ThemeIconFont, g_ThemeIconFontSize
-    global g_ThemePreset, g_UseCustomTitleBar, g_TitleBarHeight
+    global g_UseCustomTitleBar, g_TitleBarHeight
     global g_ActiveThemeFile
     try {
         g_WindowTitleMatch := IniRead(iniPath, "General", "WindowTitleMatch", g_WindowTitleMatch)
@@ -110,33 +106,14 @@ LoadConfigFromIni() {
         g_TabTitleMaxLen := Integer(IniRead(iniPath, "Layout", "TabTitleMaxLen", g_TabTitleMaxLen))
         g_TabPosition := IniRead(iniPath, "Layout", "TabPosition", g_TabPosition)
         g_TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", g_TabIndicatorHeight))
-        g_ThemePreset := IniRead(iniPath, "Theme", "Preset", g_ThemePreset)
-        g_ThemeBackground := IniRead(iniPath, "Theme", "Background", g_ThemeBackground)
-        g_ThemeTabBarBg := IniRead(iniPath, "Theme", "TabBarBg", g_ThemeTabBarBg)
-        g_ThemeTabActiveBg := IniRead(iniPath, "Theme", "TabActiveBg", g_ThemeTabActiveBg)
-        g_ThemeTabActiveText := IniRead(iniPath, "Theme", "TabActiveText", g_ThemeTabActiveText)
-        g_ThemeTabInactiveBg := IniRead(iniPath, "Theme", "TabInactiveBg", g_ThemeTabInactiveBg)
-        g_ThemeTabInactiveBgHover := IniRead(iniPath, "Theme", "TabInactiveBgHover", g_ThemeTabInactiveBgHover)
-        g_ThemeTabInactiveText := IniRead(iniPath, "Theme", "TabInactiveText", g_ThemeTabInactiveText)
-        g_ThemeIconColor := IniRead(iniPath, "Theme", "IconColor", g_ThemeIconColor)
-        g_ThemeContentBorder := IniRead(iniPath, "Theme", "ContentBorder", g_ThemeContentBorder)
-        g_ThemeWindowText := IniRead(iniPath, "Theme", "WindowText", g_ThemeWindowText)
-        g_ThemeFontName := IniRead(iniPath, "Theme", "FontName", g_ThemeFontName)
-        g_ThemeFontNameTab := IniRead(iniPath, "Theme", "FontNameTab", g_ThemeFontNameTab)
-        g_ThemeFontSize := Integer(IniRead(iniPath, "Theme", "FontSize", g_ThemeFontSize))
-        g_ThemeFontSizeClose := Integer(IniRead(iniPath, "Theme", "FontSizeClose", g_ThemeFontSizeClose))
-        g_ThemeIconFont := IniRead(iniPath, "Theme", "IconFont", g_ThemeIconFont)
-        g_ThemeIconFontSize := Integer(IniRead(iniPath, "Theme", "IconFontSize", g_ThemeIconFontSize))
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", g_UseCustomTitleBar ? "1" : "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", g_TitleBarHeight))
-        g_ActiveThemeFile := IniRead(iniPath, "Theme", "ThemeFile", "")
+        g_ActiveThemeFile := IniRead(iniPath, "Theme", "ThemeFile", "dark.ini")
     }
-    if g_ActiveThemeFile != "" {
-        themePath := A_ScriptDir "\themes\" g_ActiveThemeFile
-        if !FileExist(themePath)
-            themePath := A_ScriptDir "\" g_ActiveThemeFile
-        LoadThemeFromFile(themePath)
-    }
+    themePath := A_ScriptDir "\themes\" g_ActiveThemeFile
+    if !FileExist(themePath)
+        themePath := A_ScriptDir "\" g_ActiveThemeFile
+    LoadThemeFromFile(themePath)
     ; Load strip patterns from [TitleFilters] section (Strip1, Strip2, ...)
     g_TitleStripPatterns := []
     i := 1
