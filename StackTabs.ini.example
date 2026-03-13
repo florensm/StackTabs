@@ -1,8 +1,7 @@
 ; StackTabs configuration
-; Copy this file to StackTabs.ini and edit as needed.
 
 [General]
-WindowTitleMatch=Ticket details
+WindowTitleMatch=Power
 TargetExe=
 RefreshInterval=200
 CaptureDelayMs=900
@@ -26,36 +25,12 @@ CloseButtonWidth=22
 PopoutButtonWidth=22
 TabBarOffsetY=7
 TabPosition=top
-TabIndicatorHeight=3
 UseCustomTitleBar=0
 TitleBarHeight=28
 
 [Theme]
-; Preset: dark, light, high-contrast, or custom
-;   dark:           Background 1C1C2E, TabBar 13132A, Active 7B6CF6, Inactive 252540, Text E0E8FF
-;   light:          Background F3F3F3, TabBar E8E8E8, Active 0078D4, Inactive E1E1E1, Text 333333
-;   high-contrast:  Background 000000, TabBar 1A1A1A, Active FFFF00, Inactive 333333, Text FFFFFF/000000
-;   custom:         All colors taken directly from this file; none overridden by preset logic.
-;                   Use this when switching to a theme file from the themes/ folder.
-Preset=dark
-Background=1E1E1E
-TabBarBg=252526
-TabActiveBg=2D7DFF
-TabActiveText=FFFFFF
-TabInactiveBg=30343B
-TabInactiveBgHover=3C4049
-TabInactiveText=D8DEE9
-IconColor=AAAAAA
-ContentBorder=404040
-WindowText=FFFFFF
-FontName=Segoe UI
-FontNameTab=Segoe UI Semibold
-FontSize=9
-FontSizeClose=10
-; IconFont: font used for close/popout/merge button icons.
-; Leave blank to auto-detect (Segoe Fluent Icons on Win11, Segoe MDL2 Assets on Win10).
-; IconFont=Segoe Fluent Icons
-IconFontSize=16
+; Theme file to load from the themes\ folder. Defaults to dark.ini if not set.
+ThemeFile=dark.ini
 
 [TitleFilters]
 ; Each StripN entry is a regex pattern removed from window titles before display.

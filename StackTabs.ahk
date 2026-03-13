@@ -34,7 +34,7 @@ g_TabBarOffsetY := 7
 g_TabPosition   := "top"    ; "top" or "bottom"
 g_TabIndicatorHeight := 3  ; height in px of the active-tab indicator strip; 0 to disable
 
-; === THEME (edit these for customization) ===
+; === THEME defaults (overwritten at startup by the active theme file) ===
 g_ThemeBackground      := "1C1C2E"
 g_ThemeTabBarBg        := "13132A"
 g_ThemeTabActiveBg     := "7B6CF6"
@@ -49,10 +49,9 @@ g_ThemeFontName        := "Segoe UI"
 g_ThemeFontNameTab     := "Segoe UI Semibold"
 g_ThemeFontSize        := 9
 g_ThemeFontSizeClose   := 10
-g_ThemeIconFont        := ""   ; auto-detected at startup; override in INI with IconFont=
+g_ThemeIconFont        := ""   ; auto-detected at startup; override in theme file with IconFont=
 g_ThemeIconFontSize    := 16
-g_ThemePreset          := "dark"
-g_ActiveThemeFile      := ""    ; theme filename from themes\ folder (set via tray menu)
+g_ActiveThemeFile      := "dark.ini"   ; overridden by ThemeFile= in StackTabs.ini
 g_UseCustomTitleBar    := false
 g_TitleBarHeight       := 28
 
@@ -108,12 +107,8 @@ LoadConfigFromIni() {
         g_TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", g_TabIndicatorHeight))
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", g_UseCustomTitleBar ? "1" : "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", g_TitleBarHeight))
-        g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", "dark.ini"))
+        g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", g_ActiveThemeFile))
     }
-    themePath := A_ScriptDir "\themes\" g_ActiveThemeFile
-    if !FileExist(themePath)
-        themePath := A_ScriptDir "\" g_ActiveThemeFile
-    LoadThemeFromFile(themePath)
     ; Load strip patterns from [TitleFilters] section (Strip1, Strip2, ...)
     g_TitleStripPatterns := []
     i := 1
@@ -130,13 +125,12 @@ LoadThemeFromFile(themePath) {
     global g_ThemeBackground, g_ThemeTabBarBg, g_ThemeTabActiveBg, g_ThemeTabActiveText
     global g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover, g_ThemeTabInactiveText, g_ThemeIconColor
     global g_ThemeContentBorder, g_ThemeWindowText, g_ThemeFontName, g_ThemeFontNameTab
-    global g_ThemeFontSize, g_ThemeFontSizeClose, g_ThemeIconFont, g_ThemeIconFontSize, g_ThemePreset
+    global g_ThemeFontSize, g_ThemeFontSizeClose, g_ThemeIconFont, g_ThemeIconFontSize
     global g_HostPadding, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
     global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY, g_TabPosition, g_TabIndicatorHeight
     if !FileExist(themePath)
         return
     try {
-        g_ThemePreset             := IniRead(themePath, "Theme", "Preset",              g_ThemePreset)
         g_ThemeBackground         := IniRead(themePath, "Theme", "Background",           g_ThemeBackground)
         g_ThemeTabBarBg           := IniRead(themePath, "Theme", "TabBarBg",             g_ThemeTabBarBg)
         g_ThemeTabActiveBg        := IniRead(themePath, "Theme", "TabActiveBg",          g_ThemeTabActiveBg)
@@ -168,50 +162,6 @@ LoadThemeFromFile(themePath) {
     }
 }
 
-ApplyThemePreset() {
-    global g_ThemePreset, g_ThemeBackground, g_ThemeTabBarBg
-    global g_ThemeTabActiveBg, g_ThemeTabActiveText, g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover
-    global g_ThemeTabInactiveText, g_ThemeIconColor, g_ThemeContentBorder, g_ThemeWindowText
-    global g_ThemeFontName, g_ThemeFontSize, g_ThemeFontSizeClose
-    switch StrLower(g_ThemePreset) {
-        case "custom":
-            return  ; use all color values exactly as loaded from INI
-        case "light":
-            g_ThemeBackground := "F3F3F3"
-            g_ThemeTabBarBg := "E8E8E8"
-            g_ThemeTabActiveBg := "0078D4"
-            g_ThemeTabActiveText := "FFFFFF"
-            g_ThemeTabInactiveBg := "E1E1E1"
-            g_ThemeTabInactiveBgHover := "D0D0D0"
-            g_ThemeTabInactiveText := "333333"
-            g_ThemeIconColor := "666666"
-            g_ThemeContentBorder := "CCCCCC"
-            g_ThemeWindowText := "333333"
-        case "high-contrast":
-            g_ThemeBackground := "000000"
-            g_ThemeTabBarBg := "1A1A1A"
-            g_ThemeTabActiveBg := "FFFF00"
-            g_ThemeTabActiveText := "000000"
-            g_ThemeTabInactiveBg := "333333"
-            g_ThemeTabInactiveBgHover := "444444"
-            g_ThemeTabInactiveText := "FFFFFF"
-            g_ThemeIconColor := "CCCCCC"
-            g_ThemeContentBorder := "666666"
-            g_ThemeWindowText := "FFFFFF"
-        case "dark":
-        default:
-            g_ThemeBackground      := "1C1C2E"
-            g_ThemeTabBarBg        := "13132A"
-            g_ThemeTabActiveBg     := "7B6CF6"
-            g_ThemeTabActiveText   := "FFFFFF"
-            g_ThemeTabInactiveBg   := "252540"
-            g_ThemeTabInactiveBgHover := "30304E"
-            g_ThemeTabInactiveText := "C5CDF0"
-            g_ThemeIconColor       := "6878B0"
-            g_ThemeContentBorder   := "35355A"
-            g_ThemeWindowText      := "E0E8FF"
-    }
-}
 
 DetectIconFont() {
     global g_ThemeIconFont
@@ -273,8 +223,11 @@ ThemeMenuHandler(themeFileName, *) {
 
 SwitchTheme(themeFileName) {
     iniPath := A_ScriptDir "\StackTabs.ini"
-    if !FileExist(iniPath) && FileExist(A_ScriptDir "\StackTabs.ini.example")
-        FileCopy(A_ScriptDir "\StackTabs.ini.example", iniPath)
+    if !FileExist(iniPath) {
+        examplePath := A_ScriptDir "\StackTabs.ini.example"
+        if FileExist(examplePath)
+            FileCopy(examplePath, iniPath)
+    }
     IniWrite(themeFileName, iniPath, "Theme", "ThemeFile")
     Reload
 }
@@ -286,7 +239,7 @@ g_PendingCandidates := Map() ; tabId -> {firstSeen, candidate} (main host only)
 g_IsCleaningUp := false
 
 LoadConfigFromIni()
-ApplyThemePreset()
+LoadThemeFromFile(A_ScriptDir "\themes\" g_ActiveThemeFile)
 DetectIconFont()
 BuildTrayMenu()
 BuildHostInstance(false)  ; create main host
