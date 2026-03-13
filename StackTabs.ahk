@@ -32,18 +32,19 @@ g_CloseButtonWidth := 22
 g_PopoutButtonWidth := 22
 g_TabBarOffsetY := 7
 g_TabPosition   := "top"    ; "top" or "bottom"
+g_TabIndicatorHeight := 3  ; height in px of the active-tab indicator strip; 0 to disable
 
 ; === THEME (edit these for customization) ===
-g_ThemeBackground      := "1E1E1E"
-g_ThemeTabBarBg        := "252526"
-g_ThemeTabActiveBg     := "2D7DFF"
+g_ThemeBackground      := "1C1C2E"
+g_ThemeTabBarBg        := "13132A"
+g_ThemeTabActiveBg     := "7B6CF6"
 g_ThemeTabActiveText   := "FFFFFF"
-g_ThemeTabInactiveBg   := "30343B"
-g_ThemeTabInactiveBgHover := "3C4049"
-g_ThemeTabInactiveText := "D8DEE9"
-g_ThemeIconColor       := "AAAAAA"
-g_ThemeContentBorder   := "404040"
-g_ThemeWindowText      := "FFFFFF"
+g_ThemeTabInactiveBg   := "252540"
+g_ThemeTabInactiveBgHover := "30304E"
+g_ThemeTabInactiveText := "C5CDF0"
+g_ThemeIconColor       := "6878B0"
+g_ThemeContentBorder   := "35355A"
+g_ThemeWindowText      := "E0E8FF"
 g_ThemeFontName        := "Segoe UI"
 g_ThemeFontNameTab     := "Segoe UI Semibold"
 g_ThemeFontSize        := 9
@@ -106,6 +107,7 @@ LoadConfigFromIni() {
         g_TabBarOffsetY := Integer(IniRead(iniPath, "Layout", "TabBarOffsetY", g_TabBarOffsetY))
         g_TabTitleMaxLen := Integer(IniRead(iniPath, "Layout", "TabTitleMaxLen", g_TabTitleMaxLen))
         g_TabPosition := IniRead(iniPath, "Layout", "TabPosition", g_TabPosition)
+        g_TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", g_TabIndicatorHeight))
         g_ThemePreset := IniRead(iniPath, "Theme", "Preset", g_ThemePreset)
         g_ThemeBackground := IniRead(iniPath, "Theme", "Background", g_ThemeBackground)
         g_ThemeTabBarBg := IniRead(iniPath, "Theme", "TabBarBg", g_ThemeTabBarBg)
@@ -144,6 +146,8 @@ ApplyThemePreset() {
     global g_ThemeTabInactiveText, g_ThemeIconColor, g_ThemeContentBorder, g_ThemeWindowText
     global g_ThemeFontName, g_ThemeFontSize, g_ThemeFontSizeClose
     switch StrLower(g_ThemePreset) {
+        case "custom":
+            return  ; use all color values exactly as loaded from INI
         case "light":
             g_ThemeBackground := "F3F3F3"
             g_ThemeTabBarBg := "E8E8E8"
@@ -168,8 +172,16 @@ ApplyThemePreset() {
             g_ThemeWindowText := "FFFFFF"
         case "dark":
         default:
-            g_ThemeTabInactiveBgHover := "3C4049"
-            g_ThemeWindowText := "FFFFFF"
+            g_ThemeBackground      := "1C1C2E"
+            g_ThemeTabBarBg        := "13132A"
+            g_ThemeTabActiveBg     := "7B6CF6"
+            g_ThemeTabActiveText   := "FFFFFF"
+            g_ThemeTabInactiveBg   := "252540"
+            g_ThemeTabInactiveBgHover := "30304E"
+            g_ThemeTabInactiveText := "C5CDF0"
+            g_ThemeIconColor       := "6878B0"
+            g_ThemeContentBorder   := "35355A"
+            g_ThemeWindowText      := "E0E8FF"
     }
 }
 
@@ -369,6 +381,8 @@ BuildHostInstance(isPopout := false) {
     host.tabSlotButtons := []
     host.tabSlotCloseButtons := []
     host.tabSlotPopoutButtons := []
+    host.tabSlotIndicators := []
+    host.tabIndicators := Map()
 
     global g_ThemeBackground, g_ThemeWindowText, g_ThemeFontName, g_ThemeFontSize
     title := isPopout ? (g_HostTitle " (popped out)") : g_HostTitle
@@ -949,7 +963,7 @@ TransferTrackedWindow(sourceHost, destHost, tabId) {
 LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
     global g_HostWidth, g_HostHeight, g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
     global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabSlotMax, g_HeaderHeight, g_TabBarOffsetY
-    global g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
+    global g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition, g_TabIndicatorHeight
 
     if !host || !host.gui
         return
@@ -1018,6 +1032,10 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
         closeBtn.Opt("c" g_ThemeIconColor)
         closeBtn.OnEvent("Click", CloseSlot)
         host.tabSlotCloseButtons.Push(closeBtn)
+        if g_TabIndicatorHeight > 0 {
+            indic := host.gui.Add("Text", "Hidden x0 y0 w100 h" g_TabIndicatorHeight " Background" g_ThemeTabActiveBg, "")
+            host.tabSlotIndicators.Push(indic)
+        }
     }
 
     usableWidth := Max(200, windowWidth - (g_HostPadding * 2))
@@ -1028,6 +1046,7 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
     host.tabButtons := Map()
     host.tabCloseButtons := Map()
     host.tabPopoutButtons := Map()
+    host.tabIndicators := Map()
     x := g_HostPadding
     for i, tabId in host.tabOrder {
         if i > g_TabSlotMax
@@ -1060,6 +1079,12 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
         closeBtn.Visible := true
         host.tabCloseButtons[tabId] := closeBtn
 
+        if g_TabIndicatorHeight > 0 && host.tabSlotIndicators.Length >= i {
+            indicY := (g_TabPosition = "bottom") ? tabBtnY : (tabBtnY + g_TabHeight - g_TabIndicatorHeight)
+            host.tabSlotIndicators[i].Move(x, indicY, tabWidth, g_TabIndicatorHeight)
+            host.tabIndicators[tabId] := host.tabSlotIndicators[i]
+        }
+
         x += tabWidth + g_TabGap
     }
 
@@ -1068,6 +1093,8 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
         host.tabSlotButtons[i].Visible := false
         host.tabSlotPopoutButtons[i].Visible := false
         host.tabSlotCloseButtons[i].Visible := false
+        if host.tabSlotIndicators.Length >= i
+            host.tabSlotIndicators[i].Visible := false
     }
 
     UpdateTabButtonStyles(host)
@@ -1234,12 +1261,29 @@ MergeBackTab(popoutHost, tabId) {
 ArrangeHostsSideBySide(host1, host2) {
     try {
         WinGetPos(&x1, &y1, &w1, &h1, "ahk_id " host1.hwnd)
-        ; Place host2 to the right of host1 with small gap
         gap := 8
         x2 := x1 + w1 + gap
-        host2.gui.Show("x" x2 " y" y1 " w" w1 " h" h1)
+        y2 := y1
+
+        ; Clamp to the work area of the monitor containing host1
+        cx := x1 + w1 // 2
+        cy := y1 + h1 // 2
+        workL := 0, workT := 0, workR := A_ScreenWidth, workB := A_ScreenHeight
+        Loop MonitorGetCount() {
+            MonitorGetWorkArea(A_Index, &mL, &mT, &mR, &mB)
+            if (cx >= mL && cx < mR && cy >= mT && cy < mB) {
+                workL := mL, workT := mT, workR := mR, workB := mB
+                break
+            }
+        }
+        ; Prefer right of host1; if it doesn't fit, try left; then clamp
+        if x2 + w1 > workR
+            x2 := x1 - w1 - gap
+        x2 := Max(workL, Min(x2, workR - w1))
+        y2 := Max(workT, Min(y2, workB - h1))
+
+        host2.gui.Show("x" x2 " y" y2 " w" w1 " h" h1)
     } catch {
-        ; Fallback: just show at default position
         host2.gui.Show()
     }
 }
@@ -1318,6 +1362,8 @@ UpdateTabButtonStyles(host) {
                 host.tabCloseButtons[tabId].Opt("Background0x" g_ThemeTabActiveBg " c" g_ThemeTabActiveText)
             if host.tabPopoutButtons.Has(tabId)
                 host.tabPopoutButtons[tabId].Opt("Background0x" g_ThemeTabActiveBg " c" g_ThemeTabActiveText)
+            if host.tabIndicators.Has(tabId)
+                host.tabIndicators[tabId].Visible := true
         } else {
             inactiveBg := (tabId = hoveredId) ? g_ThemeTabInactiveBgHover : g_ThemeTabInactiveBg
             ctrl.Text := title
@@ -1327,6 +1373,8 @@ UpdateTabButtonStyles(host) {
                 host.tabCloseButtons[tabId].Opt("Background0x" inactiveBg " c" g_ThemeIconColor)
             if host.tabPopoutButtons.Has(tabId)
                 host.tabPopoutButtons[tabId].Opt("Background0x" inactiveBg " c" g_ThemeIconColor)
+            if host.tabIndicators.Has(tabId)
+                host.tabIndicators[tabId].Visible := false
         }
     }
 }
