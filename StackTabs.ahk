@@ -5,7 +5,9 @@
 
 ; ============ CONFIGURATION ============
 ; Title text that must appear in the popup/shell window.
-g_WindowTitleMatch := "Ticket details"
+; Multiple patterns are supported via Match1=/Match2=/... in StackTabs.ini.
+g_WindowTitleMatch  := "Ticket details"
+g_WindowTitleMatches := []   ; populated from INI; falls back to g_WindowTitleMatch
 
 ; Optional EXE filter. Leave blank to match any process.
 g_TargetExe := ""
@@ -19,6 +21,8 @@ g_TabDisappearGraceMs := 300
 g_HostTitle := "StackTabs"
 g_HostWidth := 1200
 g_HostHeight := 800
+g_HostX := -1   ; -1 = no saved position, let Windows decide
+g_HostY := -1
 g_HostMinWidth := 700
 g_HostMinHeight := 500
 g_HostPadding := 8
@@ -74,8 +78,8 @@ LoadConfigFromIni() {
     iniPath := A_ScriptDir "\StackTabs.ini"
     if !FileExist(iniPath)
         return
-    global g_WindowTitleMatch, g_TargetExe, g_RefreshInterval, g_CaptureDelayMs, g_TabDisappearGraceMs
-    global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight
+    global g_WindowTitleMatch, g_WindowTitleMatches, g_TargetExe, g_RefreshInterval, g_CaptureDelayMs, g_TabDisappearGraceMs
+    global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight, g_HostX, g_HostY
     global g_HostPadding, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
     global g_TabSlotMax, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY, g_TabPosition
     global g_TitleStripPatterns, g_TabTitleMaxLen
@@ -108,7 +112,24 @@ LoadConfigFromIni() {
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", g_UseCustomTitleBar ? "1" : "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", "28"))
         g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", "dark.ini"))
+        g_HostX := Integer(IniRead(iniPath, "Session", "WindowX", "-1"))
+        g_HostY := Integer(IniRead(iniPath, "Session", "WindowY", "-1"))
+        g_HostWidth  := Integer(IniRead(iniPath, "Session", "WindowW", g_HostWidth))
+        g_HostHeight := Integer(IniRead(iniPath, "Session", "WindowH", g_HostHeight))
     }
+    ; Load multiple match patterns from [General] Match1/Match2/...
+    ; Falls back to single WindowTitleMatch if no Match keys are present.
+    g_WindowTitleMatches := []
+    i := 1
+    loop {
+        val := IniRead(iniPath, "General", "Match" i, "")
+        if val = ""
+            break
+        g_WindowTitleMatches.Push(val)
+        i++
+    }
+    if g_WindowTitleMatches.Length = 0 && g_WindowTitleMatch != ""
+        g_WindowTitleMatches.Push(g_WindowTitleMatch)
     ; Load strip patterns from [TitleFilters] section (Strip1, Strip2, ...)
     g_TitleStripPatterns := []
     i := 1
@@ -472,7 +493,11 @@ BuildHostInstance(isPopout := false) {
     host.contentBorderRight := host.gui.Add("Text", "Hidden x0 y0 w1 h0 Background" g_ThemeContentBorder, "")
     host.hwnd := host.gui.Hwnd
     host.clientHwnd := host.hwnd
-    host.gui.Show("w" g_HostWidth " h" g_HostHeight)
+    global g_HostX, g_HostY
+    if !isPopout && g_HostX >= 0 && g_HostY >= 0
+        host.gui.Show("x" g_HostX " y" g_HostY " w" g_HostWidth " h" g_HostHeight)
+    else
+        host.gui.Show("w" g_HostWidth " h" g_HostHeight)
 
     ; Match DWM window border to theme (fixes white/accent bar on Windows 11)
     if g_UseCustomTitleBar && host.hwnd {
@@ -672,7 +697,7 @@ DiscoverCandidateTickets() {
 }
 
 BuildCandidateFromTopWindow(topHwnd) {
-    global g_WindowTitleMatch, g_TargetExe
+    global g_WindowTitleMatches, g_TargetExe
 
     try {
         if !WinExist("ahk_id " topHwnd)
@@ -682,8 +707,17 @@ BuildCandidateFromTopWindow(topHwnd) {
             return ""
         if (title = "")
             return ""
-        if (g_WindowTitleMatch != "") && !InStr(title, g_WindowTitleMatch, false)
-            return ""
+        if g_WindowTitleMatches.Length > 0 {
+            matched := false
+            for pat in g_WindowTitleMatches {
+                if InStr(title, pat, false) {
+                    matched := true
+                    break
+                }
+            }
+            if !matched
+                return ""
+        }
 
         processName := WinGetProcessName("ahk_id " topHwnd)
         if g_TargetExe && (StrLower(processName) != StrLower(g_TargetExe))
@@ -1504,6 +1538,20 @@ CleanupAll(*) {
         return
 
     g_IsCleaningUp := true
+
+    ; Save main window position/size to [Session] in StackTabs.ini
+    if IsObject(g_MainHost) && g_MainHost.hwnd {
+        iniPath := A_ScriptDir "\StackTabs.ini"
+        if !FileExist(iniPath) && FileExist(A_ScriptDir "\StackTabs.ini.example")
+            FileCopy(A_ScriptDir "\StackTabs.ini.example", iniPath)
+        if FileExist(iniPath) {
+            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " g_MainHost.hwnd)
+            IniWrite(wx, iniPath, "Session", "WindowX")
+            IniWrite(wy, iniPath, "Session", "WindowY")
+            IniWrite(ww, iniPath, "Session", "WindowW")
+            IniWrite(wh, iniPath, "Session", "WindowH")
+        }
+    }
 
     for host in GetAllHosts() {
         for tabId in host.tabOrder.Clone()

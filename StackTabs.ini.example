@@ -1,7 +1,10 @@
 ; StackTabs configuration
 
 [General]
+; WindowTitleMatch is a single pattern (legacy). Use Match1/Match2/... for multiple patterns.
 WindowTitleMatch=Power
+; Match1=Ticket details
+; Match2=Customer portal
 TargetExe=
 RefreshInterval=200
 CaptureDelayMs=900
@@ -37,3 +40,11 @@ ThemeFile=dark.ini
 ; Patterns are applied in order; result is trimmed of surrounding whitespace.
 ; Strip1=^App - \s*
 ; Strip2=\s*- MyApp$
+
+[Session]
+; Window position and size are saved here automatically on exit.
+; Delete these lines to reset to default placement.
+; WindowX=100
+; WindowY=100
+; WindowW=1200
+; WindowH=800

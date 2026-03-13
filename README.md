@@ -11,7 +11,7 @@ A lightweight AutoHotkey v2 script that collects all matching windows into one h
 
 ## Setup
 
-1. Copy `StackTabs.ini.example` to `StackTabs.ini` and set `WindowTitleMatch` to part of your target window's title.
+1. Copy `StackTabs.ini.example` to `StackTabs.ini` and set `WindowTitleMatch` (or `Match1=`/`Match2=`/… for multiple patterns) to part of your target window's title.
 2. Run `StackTabs.ahk` (double-click or via AutoHotkey).
 
 ## Features
@@ -44,7 +44,7 @@ You can configure StackTabs by editing variables at the top of `StackTabs.ahk` o
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `g_WindowTitleMatch` | `"Ticket details"` | Window title substring to match (case-insensitive) |
+| `g_WindowTitleMatch` | `"Ticket details"` | Window title substring to match (case-insensitive). Use `Match1=`, `Match2=`, … in the INI to match multiple patterns — any match is captured. |
 | `g_TargetExe` | `""` | Optional process filter, e.g. `"powershell.exe"` |
 | `g_RefreshInterval` | `200` | How often to rescan for windows (ms) |
 | `g_CaptureDelayMs` | `900` | How long a matching window must exist before it is embedded |
@@ -56,7 +56,7 @@ You can configure StackTabs by editing variables at the top of `StackTabs.ahk` o
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `g_HostWidth` / `g_HostHeight` | `1200` / `800` | Initial window size |
+| `g_HostWidth` / `g_HostHeight` | `1200` / `800` | Initial window size (overridden by saved session position on next launch) |
 | `g_HostPadding` | `8` | Padding around content |
 | `g_HeaderHeight` | `44` | Tab bar height |
 | `g_TabHeight` | `30` | Tab button height |
