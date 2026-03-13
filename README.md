@@ -1,5 +1,8 @@
 # StackTabs
 
+[![AutoHotkey v2](https://img.shields.io/badge/AutoHotkey-v2-334455?logo=autohotkey)](https://www.autohotkey.com/)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows)](https://www.microsoft.com/windows)
+
 A lightweight AutoHotkey v2 script that collects all matching windows into one host window and shows one embedded window at a time with a simple tab row at the top.
 
 ## Requirements
@@ -23,10 +26,10 @@ g_WindowTitleMatch := "Excel"            ; Excel workbooks
 
 ## Features
 
-- **Simple collector window**  One resizable host window for all matches
-- **Auto-refresh**  Windows are added and removed automatically
-- **Single active view**  Only one embedded window is shown at a time
-- **Lightweight tabs**  Click a tab button to switch between captured windows
+- **Simple collector window** — One resizable host window for all matches
+- **Auto-refresh** — Windows are added and removed automatically
+- **Single active view** — Only one embedded window is shown at a time
+- **Lightweight tabs** — Click a tab button to switch between captured windows
 - **Pop-out windows** — Extract a tab into its own StackTabs window for side-by-side comparison; popped-out tabs stay independent and are not re-captured
 - **Merge back** — Combine a popped-out tab back into the main stack
 - **Taskbar icon** — Uses the active tab's application icon with a coloured badge so you can tell StackTabs apart from the original app
@@ -87,19 +90,19 @@ Themes are `.ini` files in the `themes\` folder. Switch themes from the tray men
 
 StackTabs uses standard Win32 window APIs to reparent matching windows into a custom host:
 
-1. **Discovery**  Enumerates top-level windows, filters by title and optional process, scores child windows to find the best content surface
-2. **Pending delay**  New windows must exist for `g_CaptureDelayMs` before embedding (avoids capturing transient shells)
-3. **Embedding**  Saves original parent/owner/styles, reparents via `SetParent`, adjusts styles for child behavior
-4. **Rebind**  If the app recreates a window (new HWND), the script can match it back by stable ID and rebind
+1. **Discovery** — Enumerates top-level windows, filters by title and optional process, scores child windows to find the best content surface
+2. **Pending delay — New windows must exist for `g_CaptureDelayMs` before embedding (avoids capturing transient shells)
+3. **Embedding** — Saves original parent/owner/styles, reparents via `SetParent`, adjusts styles for child behavior
+4. **Rebind** — If the app recreates a window (new HWND), the script can match it back by stable ID and rebind
 
 **Tab ID** is `processName|rootOwner|normalizedTitle|contentClass` so the same logical window is recognized even if the HWND changes.
 
 ## Safety
 
-- **No system modification**  Does not modify system files, registry, or other processes' memory
-- **Reversible**  On exit, all embedded windows are restored to their original parent, position, and styles
-- **User-level only**  No elevation or admin rights required
-- **Standard APIs**  Uses the same Win32 APIs as window managers and accessibility tools
+- **No system modification** — Does not modify system files, registry, or other processes' memory
+- **Reversible — On exit, all embedded windows are restored to their original parent, position, and styles
+- **User-level only** — No elevation or admin rights required
+- **Standard APIs — Uses the same Win32 APIs as window managers and accessibility tools
 
 ## Edge Cases
 
