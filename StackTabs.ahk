@@ -27,10 +27,11 @@ g_TabGap := 6
 g_MinTabWidth := 120
 g_MaxTabWidth := 240
 g_TabHeight := 30
-g_TabSlotMax := 20
+g_TabSlotMax := 50
 g_CloseButtonWidth := 22
 g_PopoutButtonWidth := 22
 g_TabBarOffsetY := 7
+g_TabCornerRadius := 5
 
 ; === THEME (edit these for customization) ===
 g_ThemeBackground      := "1E1E1E"
@@ -47,46 +48,28 @@ g_ThemeFontName        := "Segoe UI"
 g_ThemeFontNameTab     := "Segoe UI Semibold"
 g_ThemeFontSize        := 9
 g_ThemeFontSizeClose   := 10
+g_ThemeIconFont        := ""   ; auto-detected at startup; override in INI with IconFont=
+g_ThemeIconFontSize    := 16
 g_ThemePreset          := "dark"
 g_UseCustomTitleBar    := false
 g_TitleBarHeight       := 28
 
+; Icon codepoints from Segoe Fluent Icons / Segoe MDL2 Assets (same PUA values)
+g_IconClose  := Chr(0xe894)   ; ChromeClose (replace with your choice from the icon list)
+g_IconPopout := Chr(0xE8A7)   ; OpenInNewWindow
+g_IconMerge  := Chr(0xe944)   ; Back
+
+; === TITLE FILTER ===
+; Regex stripped from raw window titles before they appear as tab labels.
+; Leave g_TitleFilterPattern blank to disable. Use g_TitleFilterReplace to
+; substitute a string instead of just removing the match.
+g_TitleFilterPattern  := ""
+g_TitleFilterReplace  := ""
+; Maximum characters shown in a tab label.
+g_TabTitleMaxLen      := 60
+
 ; Diagnostics.
 g_DebugLogPath := A_ScriptDir "\StackTabs-discovery.txt"
-; #region agent log
-g_AgentLogPath := A_ScriptDir "\debug-3e799a.log"
-AgentLog(location, message, data, hypothesisId) {
-    global g_AgentLogPath
-    try {
-        dataStr := ""
-        for k, v in data {
-            escK := StrReplace(StrReplace(StrReplace(k, "\", "\\"), '"', '\"'), "`n", "\n")
-            if (v is "Integer" || v is "Float")
-                dataStr .= '"' escK '":' v ','
-            else {
-                escV := StrReplace(StrReplace(StrReplace(String(v), "\", "\\"), '"', '\"'), "`n", "\n")
-                dataStr .= '"' escK '":"' escV '",'
-            }
-        }
-        dataStr := RTrim(dataStr, ",")
-        line := '{"sessionId":"3e799a","location":"' location '","message":"' message '","timestamp":' A_TickCount ',"hypothesisId":"' hypothesisId '","data":{' dataStr '}}' "`n"
-        FileAppend(line, g_AgentLogPath, "UTF-8")
-    }
-}
-FocusLog(operation, data, hypothesisId) {
-    try {
-        activeHwnd := WinGetID("A")
-        host := GetHostForHwnd(activeHwnd)
-        isStackTabs := !!host
-        data["activeHwnd"] := activeHwnd
-        data["isStackTabs"] := isStackTabs
-        data["activeTitle"] := SafeWinGetTitle(activeHwnd)
-        AgentLog("FocusLog:" operation, "focus_check", data, hypothesisId)
-    } catch {
-        AgentLog("FocusLog:" operation, "focus_check", data, hypothesisId)
-    }
-}
-; #endregion
 
 LoadConfigFromIni() {
     iniPath := A_ScriptDir "\StackTabs.ini"
@@ -95,17 +78,21 @@ LoadConfigFromIni() {
     global g_WindowTitleMatch, g_TargetExe, g_RefreshInterval, g_CaptureDelayMs, g_TabDisappearGraceMs
     global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight
     global g_HostPadding, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
-    global g_TabSlotMax, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY
+    global g_TabSlotMax, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY, g_TabCornerRadius
     global g_ThemeBackground, g_ThemeTabBarBg, g_ThemeTabActiveBg, g_ThemeTabActiveText
     global g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover, g_ThemeTabInactiveText, g_ThemeIconColor, g_ThemeContentBorder
     global g_ThemeWindowText, g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeFontSizeClose
+    global g_ThemeIconFont, g_ThemeIconFontSize
     global g_ThemePreset, g_UseCustomTitleBar, g_TitleBarHeight
+    global g_TitleFilterPattern, g_TitleFilterReplace, g_TabTitleMaxLen
     try {
         g_WindowTitleMatch := IniRead(iniPath, "General", "WindowTitleMatch", g_WindowTitleMatch)
         g_TargetExe := IniRead(iniPath, "General", "TargetExe", g_TargetExe)
         g_RefreshInterval := Integer(IniRead(iniPath, "General", "RefreshInterval", g_RefreshInterval))
         g_CaptureDelayMs := Integer(IniRead(iniPath, "General", "CaptureDelayMs", g_CaptureDelayMs))
         g_TabDisappearGraceMs := Integer(IniRead(iniPath, "General", "TabDisappearGraceMs", g_TabDisappearGraceMs))
+        g_TitleFilterPattern := IniRead(iniPath, "General", "TitleFilterPattern", g_TitleFilterPattern)
+        g_TitleFilterReplace := IniRead(iniPath, "General", "TitleFilterReplace", g_TitleFilterReplace)
         g_HostTitle := IniRead(iniPath, "Layout", "HostTitle", g_HostTitle)
         g_HostWidth := Integer(IniRead(iniPath, "Layout", "HostWidth", g_HostWidth))
         g_HostHeight := Integer(IniRead(iniPath, "Layout", "HostHeight", g_HostHeight))
@@ -121,6 +108,8 @@ LoadConfigFromIni() {
         g_CloseButtonWidth := Integer(IniRead(iniPath, "Layout", "CloseButtonWidth", g_CloseButtonWidth))
         g_PopoutButtonWidth := Integer(IniRead(iniPath, "Layout", "PopoutButtonWidth", g_PopoutButtonWidth))
         g_TabBarOffsetY := Integer(IniRead(iniPath, "Layout", "TabBarOffsetY", g_TabBarOffsetY))
+        g_TabTitleMaxLen := Integer(IniRead(iniPath, "Layout", "TabTitleMaxLen", g_TabTitleMaxLen))
+        g_TabCornerRadius := Integer(IniRead(iniPath, "Layout", "TabCornerRadius", g_TabCornerRadius))
         g_ThemePreset := IniRead(iniPath, "Theme", "Preset", g_ThemePreset)
         g_ThemeBackground := IniRead(iniPath, "Theme", "Background", g_ThemeBackground)
         g_ThemeTabBarBg := IniRead(iniPath, "Theme", "TabBarBg", g_ThemeTabBarBg)
@@ -136,6 +125,8 @@ LoadConfigFromIni() {
         g_ThemeFontNameTab := IniRead(iniPath, "Theme", "FontNameTab", g_ThemeFontNameTab)
         g_ThemeFontSize := Integer(IniRead(iniPath, "Theme", "FontSize", g_ThemeFontSize))
         g_ThemeFontSizeClose := Integer(IniRead(iniPath, "Theme", "FontSizeClose", g_ThemeFontSizeClose))
+        g_ThemeIconFont := IniRead(iniPath, "Theme", "IconFont", g_ThemeIconFont)
+        g_ThemeIconFontSize := Integer(IniRead(iniPath, "Theme", "IconFontSize", g_ThemeIconFontSize))
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", g_UseCustomTitleBar ? "1" : "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", g_TitleBarHeight))
     }
@@ -176,6 +167,21 @@ ApplyThemePreset() {
     }
 }
 
+DetectIconFont() {
+    global g_ThemeIconFont
+    if g_ThemeIconFont != ""
+        return
+    try {
+        Loop Reg, "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts", "V" {
+            if InStr(A_LoopRegName, "Segoe Fluent Icons") {
+                g_ThemeIconFont := "Segoe Fluent Icons"
+                return
+            }
+        }
+    }
+    g_ThemeIconFont := "Segoe MDL2 Assets"
+}
+
 ; ============ STATE ============
 g_MainHost := ""             ; HostInstance for main window
 g_PopoutHosts := []          ; array of HostInstance for popped-out windows
@@ -184,10 +190,12 @@ g_IsCleaningUp := false
 
 LoadConfigFromIni()
 ApplyThemePreset()
+DetectIconFont()
 BuildHostInstance(false)  ; create main host
 OnExit(CleanupAll)
 RefreshWindows()
 SetTimer(RefreshWindows, g_RefreshInterval)
+SetTimer(CheckTabHoverAll, 50)
 
 ; Win+Shift+T toggles the host window.
 #+t:: {
@@ -344,6 +352,7 @@ BuildHostInstance(isPopout := false) {
     host.tabRecords := Map()
     host.tabOrder := []
     host.activeTabId := ""
+    host.tabHoveredId := ""
     host.tabButtons := Map()
     host.tabCloseButtons := Map()
     host.tabSlotButtons := []
@@ -364,6 +373,7 @@ BuildHostInstance(isPopout := false) {
     host.gui.OnEvent("Size", HostGuiResized.Bind(host))
 
     global g_ThemeTabBarBg, g_ThemeContentBorder, g_HeaderHeight
+    global g_ThemeIconFont, g_ThemeIconFontSize, g_IconClose
     tabBarY := 0
     tabBarH := g_HeaderHeight
     if g_UseCustomTitleBar {
@@ -372,8 +382,8 @@ BuildHostInstance(isPopout := false) {
         host.titleBarBg.OnEvent("Click", TitleBarDragClick.Bind(host))
         host.titleText := host.gui.Add("Text", "x8 y0 w" (g_HostWidth - 60) " h" g_TitleBarHeight " +0x200 +0x100 BackgroundTrans", title)
         host.titleText.OnEvent("Click", TitleBarDragClick.Bind(host))
-        host.titleCloseBtn := host.gui.Add("Text", "x" (g_HostWidth - 46) " y0 w46 h" g_TitleBarHeight " +0x200 +0x100 Border Center Background" g_ThemeTabBarBg, "×")
-        host.titleCloseBtn.SetFont("s12 Bold", g_ThemeFontName)
+        host.titleCloseBtn := host.gui.Add("Text", "x" (g_HostWidth - 46) " y0 w46 h" g_TitleBarHeight " +0x200 +0x100 Center Background" g_ThemeTabBarBg, g_IconClose)
+        host.titleCloseBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
         host.titleCloseBtn.Opt("c" g_ThemeIconColor)
         host.titleCloseBtn.OnEvent("Click", TitleBarCloseClick.Bind(host))
     }
@@ -425,16 +435,6 @@ RefreshWindows(*) {
     if !g_MainHost || g_IsCleaningUp
         return
 
-    ; #region agent log
-    try {
-        refreshStartActive := WinGetID("A")
-        refreshStartIsStackTabs := !!GetHostForHwnd(refreshStartActive)
-    } catch {
-        refreshStartActive := 0
-        refreshStartIsStackTabs := false
-    }
-    ; #endregion
-
     now := A_TickCount
 
     ; Update all hosts: keep tabs alive, check for stale tabs
@@ -472,9 +472,6 @@ RefreshWindows(*) {
 
                 if !g_PendingCandidates.Has(candidate.id) {
                     g_PendingCandidates[candidate.id] := {firstSeen: now, candidate: candidate}
-                    ; #region agent log
-                    AgentLog("StackTabs.ahk:RefreshWindows", "New pending candidate", Map("id", candidate.id, "tabOrderLen", host.tabOrder.Length), "H1")
-                    ; #endregion
                     AppendDebugLog("New candidate`r`n" candidate.hierarchySummary "`r`n")
                     continue
                 }
@@ -496,18 +493,11 @@ RefreshWindows(*) {
                         if match.host = host
                             structureChanged := true
                     } else if CreateTrackedTab(host, candidate) {
-                        ; #region agent log
-                        AgentLog("StackTabs.ahk:RefreshWindows", "Captured (new)", Map("id", candidate.id), "H5")
-                        ; #endregion
                         host.activeTabId := candidate.id
                         ShowOnlyActiveTab(host)
                         ; Restore focus: embedding steals focus to owner (main App)
                         try WinActivate("ahk_id " host.hwnd)
                         structureChanged := true
-                    } else {
-                        ; #region agent log
-                        AgentLog("StackTabs.ahk:RefreshWindows", "CreateTrackedTab FAILED (new)", Map("id", candidate.id), "H5")
-                        ; #endregion
                     }
                     g_PendingCandidates.Delete(candidate.id)
                 }
@@ -519,9 +509,6 @@ RefreshWindows(*) {
                     stalePending.Push(tabId)
             }
             for tabId in stalePending {
-                ; #region agent log
-                AgentLog("StackTabs.ahk:RefreshWindows", "Stale pending removed", Map("tabId", tabId, "tabOrderLen", host.tabOrder.Length), "H1")
-                ; #endregion
                 g_PendingCandidates.Delete(tabId)
             }
         }
@@ -557,24 +544,11 @@ RefreshWindows(*) {
         ShowOnlyActiveTab(host)
         UpdateHostTitle(host)
     }
-
-    ; #region agent log
-    try {
-        refreshEndActive := WinGetID("A")
-        refreshEndIsStackTabs := !!GetHostForHwnd(refreshEndActive)
-        if (refreshStartIsStackTabs && !refreshEndIsStackTabs) {
-            AgentLog("RefreshWindows:END", "FOCUS_LOST", Map("startHwnd", refreshStartActive, "endHwnd", refreshEndActive, "endTitle", SafeWinGetTitle(refreshEndActive)), "A")
-        }
-    } catch {
-    }
-    ; #endregion
 }
 
 DiscoverCandidateTickets() {
     candidates := []
     seenIds := Map()
-    static logCounter := 0
-    logCounter++
 
     ; Build set of all embedded HWNDs (content + top) across all hosts
     embeddedHwnds := Map()
@@ -588,29 +562,15 @@ DiscoverCandidateTickets() {
         }
     }
 
-    winList := WinGetList()
-    winCount := winList.Length
-    embeddedCount := embeddedHwnds.Count
-    skipEmbedded := 0
-    skipNoCandidate := 0
-    skipContentEmbedded := 0
-    skipSeen := 0
-
-    for hwnd in winList {
+    for hwnd in WinGetList() {
         if embeddedHwnds.Has(hwnd "")
             continue
 
         candidate := BuildCandidateFromTopWindow(hwnd)
-        if !IsObject(candidate) {
-            skipNoCandidate++
+        if !IsObject(candidate)
             continue
-        }
         ; Skip if this candidate's content/top is already embedded anywhere
-        if embeddedHwnds.Has(candidate.contentHwnd "") {
-            skipContentEmbedded++
-            continue
-        }
-        if embeddedHwnds.Has(candidate.topHwnd "")
+        if embeddedHwnds.Has(candidate.contentHwnd "") || embeddedHwnds.Has(candidate.topHwnd "")
             continue
         if seenIds.Has(candidate.id)
             continue
@@ -618,11 +578,6 @@ DiscoverCandidateTickets() {
         seenIds[candidate.id] := true
         candidates.Push(candidate)
     }
-
-    ; #region agent log
-    if (Mod(logCounter, 10) = 0 || candidates.Length > 0)
-        AgentLog("StackTabs.ahk:DiscoverCandidateTickets", "Discovery result", Map("winCount", winCount, "embeddedCount", embeddedCount, "candidatesCount", candidates.Length, "skipNoCandidate", skipNoCandidate, "skipContentEmbedded", skipContentEmbedded), "H1")
-    ; #endregion
 
     return candidates
 }
@@ -634,20 +589,10 @@ BuildCandidateFromTopWindow(topHwnd) {
         if !WinExist("ahk_id " topHwnd)
             return ""
         title := WinGetTitle("ahk_id " topHwnd)
-        if !DllCall("IsWindowVisible", "ptr", topHwnd) {
-            ; #region agent log
-            if (g_WindowTitleMatch != "" && InStr(title, g_WindowTitleMatch, false))
-                AgentLog("StackTabs.ahk:BuildCandidateFromTopWindow", "Skip: not visible", Map("hwnd", topHwnd, "title", title), "H1")
-            ; #endregion
+        if !DllCall("IsWindowVisible", "ptr", topHwnd)
             return ""
-        }
-        if (title = "") {
-            ; #region agent log
-            if (g_WindowTitleMatch != "")
-                AgentLog("StackTabs.ahk:BuildCandidateFromTopWindow", "Skip: empty title", Map("hwnd", topHwnd), "H2")
-            ; #endregion
+        if (title = "")
             return ""
-        }
         if (g_WindowTitleMatch != "") && !InStr(title, g_WindowTitleMatch, false)
             return ""
 
@@ -656,12 +601,8 @@ BuildCandidateFromTopWindow(topHwnd) {
             return ""
 
         WinGetPos(, , &w, &h, "ahk_id " topHwnd)
-        if (w < 120 || h < 80) {
-            ; #region agent log
-            AgentLog("StackTabs.ahk:BuildCandidateFromTopWindow", "Skip: size too small", Map("hwnd", topHwnd, "title", title, "w", w, "h", h), "H3")
-            ; #endregion
+        if (w < 120 || h < 80)
             return ""
-        }
 
         contentHwnd := FindStableContentWindow(topHwnd)
         if !contentHwnd
@@ -844,9 +785,6 @@ CloseTab(host, tabId) {
     record := host.tabRecords[tabId]
     topHwnd := record.topHwnd
     contentHwnd := record.contentHwnd
-    ; #region agent log
-    AgentLog("StackTabs.ahk:CloseTab", "Closing tab", Map("tabId", tabId, "remainingTabs", host.tabOrder.Length - 1), "H1")
-    ; #endregion
     ; Close before detach - window may process close better while still embedded
     CloseWindowReliably(topHwnd, contentHwnd)
     RemoveTrackedTab(host, tabId, false)
@@ -917,10 +855,6 @@ AttachTrackedWindow(host, tabId) {
     if !WinExist("ahk_id " hwnd)
         return false
 
-    ; #region agent log
-    FocusLog("AttachBefore", Map("tabId", tabId, "contentHwnd", hwnd), "B")
-    ; #endregion
-
     if (record.topHwnd != hwnd) && WinExist("ahk_id " record.topHwnd) {
         record.sourceWasHidden := true
         DllCall("ShowWindow", "ptr", record.topHwnd, "int", 0)
@@ -948,9 +882,6 @@ AttachTrackedWindow(host, tabId) {
     DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", 0, "int", 0, "int", 100, "int", 100, "uint", flags)
     DllCall("ShowWindow", "ptr", hwnd, "int", 0)
     RedrawEmbeddedWindow(hwnd)
-    ; #region agent log
-    FocusLog("AttachAfter", Map("tabId", tabId, "contentHwnd", hwnd), "B")
-    ; #endregion
     return true
 }
 
@@ -1047,19 +978,23 @@ LayoutTabButtons(host, windowWidth := 0) {
     }
 
     global g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeFontSizeClose, g_ThemeIconColor
+    global g_ThemeIconFont, g_ThemeIconFontSize, g_IconClose, g_IconPopout, g_IconMerge, g_TabCornerRadius
     tabBtnY := tabBarY + g_TabBarOffsetY
     needed := Min(tabCount, g_TabSlotMax)
     while host.tabSlotButtons.Length < needed {
         btn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w100 h" g_TabHeight " +0x200 +0x100 Center", "")
         btn.SetFont("s" g_ThemeFontSize, g_ThemeFontNameTab)
+        btn.OnEvent("Click", SelectSlot)
         host.tabSlotButtons.Push(btn)
         popoutBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_PopoutButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", "")
-        popoutBtn.SetFont("s" g_ThemeFontSize, g_ThemeFontName)
+        popoutBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
         popoutBtn.Opt("c" g_ThemeIconColor)
+        popoutBtn.OnEvent("Click", PopOutSlot)
         host.tabSlotPopoutButtons.Push(popoutBtn)
-        closeBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_CloseButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", "×")
-        closeBtn.SetFont("s" g_ThemeFontSizeClose " Bold", g_ThemeFontName)
+        closeBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_CloseButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", g_IconClose)
+        closeBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
         closeBtn.Opt("c" g_ThemeIconColor)
+        closeBtn.OnEvent("Click", CloseSlot)
         host.tabSlotCloseButtons.Push(closeBtn)
     }
 
@@ -1078,28 +1013,32 @@ LayoutTabButtons(host, windowWidth := 0) {
         btn := host.tabSlotButtons[i]
         popoutBtn := host.tabSlotPopoutButtons[i]
         closeBtn := host.tabSlotCloseButtons[i]
-        title := host.tabRecords.Has(tabId) ? host.tabRecords[tabId].title : "Window"
-        btn.Text := ShortTitle(title, 20)
+        title := host.tabRecords.Has(tabId) ? ShortTitle(FilterTitle(host.tabRecords[tabId].title), g_TabTitleMaxLen) : "Window"
+        btn.Text := title
         btn.Move(x, tabBtnY, titleWidth, g_TabHeight)
-        btn.OnEvent("Click", SelectTab.Bind(host, tabId))
+        btn.tabSlotHost := host
+        btn.tabSlotId   := tabId
         btn.Visible := true
         host.tabButtons[tabId] := btn
 
         popoutBtn.Move(x + titleWidth, tabBtnY, g_PopoutButtonWidth, g_TabHeight)
-        if host.isPopout {
-            popoutBtn.Text := "←"
-            popoutBtn.OnEvent("Click", MergeBackClick.Bind(host, tabId))
-        } else {
-            popoutBtn.Text := "↗"
-            popoutBtn.OnEvent("Click", PopOutClick.Bind(host, tabId))
-        }
+        popoutBtn.tabSlotHost    := host
+        popoutBtn.tabSlotId      := tabId
+        popoutBtn.tabSlotIsMerge := host.isPopout
+        if host.isPopout
+            popoutBtn.Text := g_IconMerge
+        else
+            popoutBtn.Text := g_IconPopout
         popoutBtn.Visible := true
         host.tabPopoutButtons[tabId] := popoutBtn
 
         closeBtn.Move(x + titleWidth + g_PopoutButtonWidth, tabBtnY, g_CloseButtonWidth, g_TabHeight)
-        closeBtn.OnEvent("Click", CloseTabClick.Bind(host, tabId))
+        closeBtn.tabSlotHost := host
+        closeBtn.tabSlotId   := tabId
         closeBtn.Visible := true
         host.tabCloseButtons[tabId] := closeBtn
+
+        ApplyTabRegions(btn.Hwnd, titleWidth, closeBtn.Hwnd, g_CloseButtonWidth, g_TabHeight, g_TabCornerRadius)
 
         x += tabWidth + g_TabGap
     }
@@ -1114,16 +1053,67 @@ LayoutTabButtons(host, windowWidth := 0) {
     UpdateTabButtonStyles(host)
 }
 
-CloseTabClick(host, tabId, *) {
-    CloseTab(host, tabId)
+; Generic slot handlers — registered once per slot at creation; tabSlot* props updated each layout pass.
+SelectSlot(ctrl, *) {
+    if ctrl.HasProp("tabSlotHost") && ctrl.HasProp("tabSlotId")
+        SelectTab(ctrl.tabSlotHost, ctrl.tabSlotId)
 }
 
-PopOutClick(host, tabId, *) {
-    PopOutTab(host, tabId)
+CloseSlot(ctrl, *) {
+    if ctrl.HasProp("tabSlotHost") && ctrl.HasProp("tabSlotId")
+        CloseTab(ctrl.tabSlotHost, ctrl.tabSlotId)
 }
 
-MergeBackClick(host, tabId, *) {
-    MergeBackTab(host, tabId)
+PopOutSlot(ctrl, *) {
+    if ctrl.HasProp("tabSlotHost") && ctrl.HasProp("tabSlotId") && ctrl.HasProp("tabSlotIsMerge") {
+        if ctrl.tabSlotIsMerge
+            MergeBackTab(ctrl.tabSlotHost, ctrl.tabSlotId)
+        else
+            PopOutTab(ctrl.tabSlotHost, ctrl.tabSlotId)
+    }
+}
+
+; Apply rounded corners to a tab's label (left-rounded) and close button (right-rounded)
+; using pure GDI region calls — no external DLLs required.
+ApplyTabRegions(btnHwnd, btnW, closeBtnHwnd, closeBtnW, h, r) {
+    if r <= 0 {
+        DllCall("SetWindowRgn", "Ptr", btnHwnd,      "Ptr", 0, "Int", true)
+        DllCall("SetWindowRgn", "Ptr", closeBtnHwnd, "Ptr", 0, "Int", true)
+        return
+    }
+    ; Label button: left corners rounded, right corners square.
+    ; Build: rounded-rect UNION right-edge rect (fills in the rounded-in right corners).
+    hRgn := DllCall("CreateRoundRectRgn", "Int", 0, "Int", 0, "Int", btnW + 1, "Int", h + 1, "Int", r * 2, "Int", r * 2, "Ptr")
+    hFill := DllCall("CreateRectRgn", "Int", btnW - r, "Int", 0, "Int", btnW + 1, "Int", h + 1, "Ptr")
+    DllCall("CombineRgn", "Ptr", hRgn, "Ptr", hRgn, "Ptr", hFill, "Int", 2)   ; RGN_OR
+    DllCall("DeleteObject", "Ptr", hFill)
+    DllCall("SetWindowRgn", "Ptr", btnHwnd, "Ptr", hRgn, "Int", true)         ; OS takes ownership of hRgn
+
+    ; Close button: right corners rounded, left corners square.
+    hRgn2 := DllCall("CreateRoundRectRgn", "Int", 0, "Int", 0, "Int", closeBtnW + 1, "Int", h + 1, "Int", r * 2, "Int", r * 2, "Ptr")
+    hFill2 := DllCall("CreateRectRgn", "Int", 0, "Int", 0, "Int", r, "Int", h + 1, "Ptr")
+    DllCall("CombineRgn", "Ptr", hRgn2, "Ptr", hRgn2, "Ptr", hFill2, "Int", 2)  ; RGN_OR
+    DllCall("DeleteObject", "Ptr", hFill2)
+    DllCall("SetWindowRgn", "Ptr", closeBtnHwnd, "Ptr", hRgn2, "Int", true)   ; OS takes ownership of hRgn2
+}
+
+CheckTabHoverAll() {
+    MouseGetPos(, , , &ctrlHwnd, 2)
+    for host in GetAllHosts() {
+        if !host.hwnd || !host.HasProp("tabButtons")
+            continue
+        newHovered := ""
+        for tabId, btn in host.tabButtons {
+            if btn.Hwnd = ctrlHwnd {
+                newHovered := tabId
+                break
+            }
+        }
+        if newHovered != host.tabHoveredId {
+            host.tabHoveredId := newHovered
+            UpdateTabButtonStyles(host)
+        }
+    }
 }
 
 SelectTab(host, tabId, *) {
@@ -1299,18 +1289,12 @@ ShowOnlyActiveTab(host) {
             continue
 
         if tabId = host.activeTabId {
-            ; #region agent log
-            FocusLog("ShowTabBefore", Map("tabId", tabId, "contentHwnd", record.contentHwnd), "A")
-            ; #endregion
             flags := 0x0020 | 0x0004 | 0x0010
             DllCall("SetWindowPos", "ptr", record.contentHwnd, "ptr", 0
                 , "int", areaX, "int", areaY, "int", areaW, "int", areaH
                 , "uint", flags)
             DllCall("ShowWindow", "ptr", record.contentHwnd, "int", 4)
             RedrawEmbeddedWindow(record.contentHwnd)
-            ; #region agent log
-            FocusLog("ShowTabAfter", Map("tabId", tabId), "A")
-            ; #endregion
         } else {
             DllCall("ShowWindow", "ptr", record.contentHwnd, "int", 0)
         }
@@ -1320,14 +1304,15 @@ ShowOnlyActiveTab(host) {
 }
 
 UpdateTabButtonStyles(host) {
-    global g_ThemeTabActiveBg, g_ThemeTabActiveText, g_ThemeTabInactiveBg
+    global g_ThemeTabActiveBg, g_ThemeTabActiveText, g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover
     global g_ThemeTabInactiveText, g_ThemeIconColor, g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize
     if !host || !IsObject(host) || !host.HasProp("tabButtons") || !host.tabButtons
         return
     if !host.hwnd || !WinExist("ahk_id " host.hwnd)
         return
+    hoveredId := host.HasProp("tabHoveredId") ? host.tabHoveredId : ""
     for tabId, ctrl in host.tabButtons {
-        title := host.tabRecords.Has(tabId) ? ShortTitle(host.tabRecords[tabId].title, 20) : "Window"
+        title := host.tabRecords.Has(tabId) ? ShortTitle(FilterTitle(host.tabRecords[tabId].title), g_TabTitleMaxLen) : "Window"
         if tabId = host.activeTabId {
             ctrl.Text := title
             ctrl.SetFont("s" g_ThemeFontSize " Bold", g_ThemeFontNameTab)
@@ -1337,13 +1322,14 @@ UpdateTabButtonStyles(host) {
             if host.tabPopoutButtons.Has(tabId)
                 host.tabPopoutButtons[tabId].Opt("Background0x" g_ThemeTabActiveBg " c" g_ThemeTabActiveText)
         } else {
+            inactiveBg := (tabId = hoveredId) ? g_ThemeTabInactiveBgHover : g_ThemeTabInactiveBg
             ctrl.Text := title
             ctrl.SetFont("s" g_ThemeFontSize " Norm", g_ThemeFontName)
-            ctrl.Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeTabInactiveText)
+            ctrl.Opt("Background0x" inactiveBg " c" g_ThemeTabInactiveText)
             if host.tabCloseButtons.Has(tabId)
-                host.tabCloseButtons[tabId].Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeIconColor)
+                host.tabCloseButtons[tabId].Opt("Background0x" inactiveBg " c" g_ThemeIconColor)
             if host.tabPopoutButtons.Has(tabId)
-                host.tabPopoutButtons[tabId].Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeIconColor)
+                host.tabPopoutButtons[tabId].Opt("Background0x" inactiveBg " c" g_ThemeIconColor)
         }
     }
 }
@@ -1545,6 +1531,13 @@ NormalizeTitle(title) {
     normalized := Trim(StrLower(title))
     normalized := RegExReplace(normalized, "\s+", " ")
     return normalized
+}
+
+FilterTitle(title) {
+    global g_TitleFilterPattern, g_TitleFilterReplace
+    if g_TitleFilterPattern = ""
+        return title
+    return RegExReplace(title, g_TitleFilterPattern, g_TitleFilterReplace)
 }
 
 ShortTitle(title, maxLen := 28) {

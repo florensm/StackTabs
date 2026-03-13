@@ -7,6 +7,9 @@ TargetExe=
 RefreshInterval=200
 CaptureDelayMs=900
 TabDisappearGraceMs=300
+; Optional: regex to strip from window titles before showing in tabs. Leave blank to disable.
+; TitleFilterPattern=^Ticket details for:?\s*
+; TitleFilterReplace=
 
 [Layout]
 HostTitle=StackTabs
@@ -20,10 +23,12 @@ TabGap=6
 MinTabWidth=120
 MaxTabWidth=240
 TabHeight=30
-TabSlotMax=20
+TabSlotMax=50
+TabTitleMaxLen=60
 CloseButtonWidth=22
 PopoutButtonWidth=22
 TabBarOffsetY=7
+TabCornerRadius=5
 UseCustomTitleBar=0
 TitleBarHeight=28
 
@@ -47,3 +52,7 @@ FontName=Segoe UI
 FontNameTab=Segoe UI Semibold
 FontSize=9
 FontSizeClose=10
+; IconFont: font used for close/popout/merge button icons.
+; Leave blank to auto-detect (Segoe Fluent Icons on Win11, Segoe MDL2 Assets on Win10).
+; IconFont=Segoe Fluent Icons
+IconFontSize=16

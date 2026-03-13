@@ -55,6 +55,8 @@ You can configure StackTabs by editing variables at the top of `StackTabs.ahk` o
 | `g_RefreshInterval` | `200` | How often to rescan for windows (ms) |
 | `g_CaptureDelayMs` | `900` | How long a matching window must exist before it is embedded |
 | `g_TabDisappearGraceMs` | `300` | Grace period before removing a tab whose window disappeared |
+| `g_TitleFilterPattern` | `""` | Regex to strip from window titles before showing in tabs (leave blank to disable) |
+| `g_TitleFilterReplace` | `""` | Replacement string for the regex match (empty = remove) |
 
 ### Layout
 
@@ -64,6 +66,8 @@ You can configure StackTabs by editing variables at the top of `StackTabs.ahk` o
 | `g_HostPadding` | `8` | Padding around content |
 | `g_HeaderHeight` | `44` | Tab bar height |
 | `g_TabHeight` | `30` | Tab button height |
+| `g_TabSlotMax` | `50` | Maximum number of tabs shown (extra tabs are hidden) |
+| `g_TabTitleMaxLen` | `60` | Max characters in tab label (truncated with ellipsis) |
 | `g_UseCustomTitleBar` | `false` | Use borderless custom title bar (set to `1` in INI to enable) |
 | `g_TitleBarHeight` | `28` | Custom title bar height when enabled |
 
