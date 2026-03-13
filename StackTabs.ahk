@@ -52,6 +52,7 @@ g_ThemeFontSizeClose   := 10
 g_ThemeIconFont        := ""   ; auto-detected at startup; override in INI with IconFont=
 g_ThemeIconFontSize    := 16
 g_ThemePreset          := "dark"
+g_ActiveThemeFile      := ""    ; theme filename from themes\ folder (set via tray menu)
 g_UseCustomTitleBar    := false
 g_TitleBarHeight       := 28
 
@@ -84,6 +85,7 @@ LoadConfigFromIni() {
     global g_ThemeWindowText, g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeFontSizeClose
     global g_ThemeIconFont, g_ThemeIconFontSize
     global g_ThemePreset, g_UseCustomTitleBar, g_TitleBarHeight
+    global g_ActiveThemeFile
     try {
         g_WindowTitleMatch := IniRead(iniPath, "General", "WindowTitleMatch", g_WindowTitleMatch)
         g_TargetExe := IniRead(iniPath, "General", "TargetExe", g_TargetExe)
@@ -127,6 +129,13 @@ LoadConfigFromIni() {
         g_ThemeIconFontSize := Integer(IniRead(iniPath, "Theme", "IconFontSize", g_ThemeIconFontSize))
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", g_UseCustomTitleBar ? "1" : "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", g_TitleBarHeight))
+        g_ActiveThemeFile := IniRead(iniPath, "Theme", "ThemeFile", "")
+    }
+    if g_ActiveThemeFile != "" {
+        themePath := A_ScriptDir "\themes\" g_ActiveThemeFile
+        if !FileExist(themePath)
+            themePath := A_ScriptDir "\" g_ActiveThemeFile
+        LoadThemeFromFile(themePath)
     }
     ; Load strip patterns from [TitleFilters] section (Strip1, Strip2, ...)
     g_TitleStripPatterns := []
@@ -137,6 +146,48 @@ LoadConfigFromIni() {
             break
         g_TitleStripPatterns.Push(val)
         i++
+    }
+}
+
+LoadThemeFromFile(themePath) {
+    global g_ThemeBackground, g_ThemeTabBarBg, g_ThemeTabActiveBg, g_ThemeTabActiveText
+    global g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover, g_ThemeTabInactiveText, g_ThemeIconColor
+    global g_ThemeContentBorder, g_ThemeWindowText, g_ThemeFontName, g_ThemeFontNameTab
+    global g_ThemeFontSize, g_ThemeFontSizeClose, g_ThemeIconFont, g_ThemeIconFontSize, g_ThemePreset
+    global g_HostPadding, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
+    global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY, g_TabPosition, g_TabIndicatorHeight
+    if !FileExist(themePath)
+        return
+    try {
+        g_ThemePreset             := IniRead(themePath, "Theme", "Preset",              g_ThemePreset)
+        g_ThemeBackground         := IniRead(themePath, "Theme", "Background",           g_ThemeBackground)
+        g_ThemeTabBarBg           := IniRead(themePath, "Theme", "TabBarBg",             g_ThemeTabBarBg)
+        g_ThemeTabActiveBg        := IniRead(themePath, "Theme", "TabActiveBg",          g_ThemeTabActiveBg)
+        g_ThemeTabActiveText      := IniRead(themePath, "Theme", "TabActiveText",        g_ThemeTabActiveText)
+        g_ThemeTabInactiveBg      := IniRead(themePath, "Theme", "TabInactiveBg",        g_ThemeTabInactiveBg)
+        g_ThemeTabInactiveBgHover := IniRead(themePath, "Theme", "TabInactiveBgHover",   g_ThemeTabInactiveBgHover)
+        g_ThemeTabInactiveText    := IniRead(themePath, "Theme", "TabInactiveText",      g_ThemeTabInactiveText)
+        g_ThemeIconColor          := IniRead(themePath, "Theme", "IconColor",            g_ThemeIconColor)
+        g_ThemeContentBorder      := IniRead(themePath, "Theme", "ContentBorder",        g_ThemeContentBorder)
+        g_ThemeWindowText         := IniRead(themePath, "Theme", "WindowText",           g_ThemeWindowText)
+        g_ThemeFontName           := IniRead(themePath, "Theme", "FontName",             g_ThemeFontName)
+        g_ThemeFontNameTab        := IniRead(themePath, "Theme", "FontNameTab",          g_ThemeFontNameTab)
+        g_ThemeFontSize           := Integer(IniRead(themePath, "Theme", "FontSize",         g_ThemeFontSize))
+        g_ThemeFontSizeClose      := Integer(IniRead(themePath, "Theme", "FontSizeClose",    g_ThemeFontSizeClose))
+        g_ThemeIconFont           := IniRead(themePath, "Theme", "IconFont",             g_ThemeIconFont)
+        g_ThemeIconFontSize       := Integer(IniRead(themePath, "Theme", "IconFontSize",     g_ThemeIconFontSize))
+        ; Optional layout overrides — only applied if the theme file includes a [Layout] section
+        g_HostPadding         := Integer(IniRead(themePath, "Layout", "HostPadding",         g_HostPadding))
+        g_HeaderHeight        := Integer(IniRead(themePath, "Layout", "HeaderHeight",         g_HeaderHeight))
+        g_TabGap              := Integer(IniRead(themePath, "Layout", "TabGap",               g_TabGap))
+        g_MinTabWidth         := Integer(IniRead(themePath, "Layout", "MinTabWidth",           g_MinTabWidth))
+        g_MaxTabWidth         := Integer(IniRead(themePath, "Layout", "MaxTabWidth",           g_MaxTabWidth))
+        g_TabHeight           := Integer(IniRead(themePath, "Layout", "TabHeight",             g_TabHeight))
+        g_CloseButtonWidth    := Integer(IniRead(themePath, "Layout", "CloseButtonWidth",      g_CloseButtonWidth))
+        g_PopoutButtonWidth   := Integer(IniRead(themePath, "Layout", "PopoutButtonWidth",     g_PopoutButtonWidth))
+        g_TabBarOffsetY       := Integer(IniRead(themePath, "Layout", "TabBarOffsetY",         g_TabBarOffsetY))
+        g_TabIndicatorHeight  := Integer(IniRead(themePath, "Layout", "TabIndicatorHeight",    g_TabIndicatorHeight))
+        g_TabPosition         := IniRead(themePath, "Layout", "TabPosition",                   g_TabPosition)
     }
 }
 
@@ -200,6 +251,57 @@ DetectIconFont() {
     g_ThemeIconFont := "Segoe MDL2 Assets"
 }
 
+BuildTrayMenu() {
+    global g_ActiveThemeFile
+    A_TrayMenu.Delete()
+    themeSubMenu := Menu()
+    themesDir := A_ScriptDir "\themes"
+    if DirExist(themesDir) {
+        Loop Files, themesDir "\*.ini" {
+            fileName := A_LoopFileName
+            displayName := ThemeDisplayName(fileName)
+            themeSubMenu.Add(displayName, ThemeMenuHandler.Bind(fileName))
+            if StrLower(g_ActiveThemeFile) = StrLower(fileName)
+                themeSubMenu.Check(displayName)
+        }
+    }
+    A_TrayMenu.Add("Theme", themeSubMenu)
+    A_TrayMenu.Add()
+    A_TrayMenu.Add("Exit", (*) => ExitApp())
+}
+
+ThemeDisplayName(fileName) {
+    name := RegExReplace(fileName, "\.ini$", "")
+    name := StrReplace(name, "-", " ")
+    result := ""
+    capitalize := true
+    Loop Parse, name {
+        ch := A_LoopField
+        if ch = " " {
+            result .= ch
+            capitalize := true
+        } else if capitalize {
+            result .= StrUpper(ch)
+            capitalize := false
+        } else {
+            result .= ch
+        }
+    }
+    return result
+}
+
+ThemeMenuHandler(themeFileName, *) {
+    SwitchTheme(themeFileName)
+}
+
+SwitchTheme(themeFileName) {
+    iniPath := A_ScriptDir "\StackTabs.ini"
+    if !FileExist(iniPath) && FileExist(A_ScriptDir "\StackTabs.ini.example")
+        FileCopy(A_ScriptDir "\StackTabs.ini.example", iniPath)
+    IniWrite(themeFileName, iniPath, "Theme", "ThemeFile")
+    Reload
+}
+
 ; ============ STATE ============
 g_MainHost := ""             ; HostInstance for main window
 g_PopoutHosts := []          ; array of HostInstance for popped-out windows
@@ -209,6 +311,7 @@ g_IsCleaningUp := false
 LoadConfigFromIni()
 ApplyThemePreset()
 DetectIconFont()
+BuildTrayMenu()
 BuildHostInstance(false)  ; create main host
 OnExit(CleanupAll)
 RefreshWindows()
