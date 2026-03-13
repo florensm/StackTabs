@@ -982,16 +982,19 @@ LayoutTabButtons(host, windowWidth := 0) {
     tabBtnY := tabBarY + g_TabBarOffsetY
     needed := Min(tabCount, g_TabSlotMax)
     while host.tabSlotButtons.Length < needed {
-        btn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w100 h" g_TabHeight " +0x200 +0x100 Center", "")
+        ; WS_CLIPSIBLINGS (0x04000000) is required to make SetWindowRgn work on Static controls.
+        ; Static controls use CS_PARENTDC by default, which conflicts with custom window regions.
+        ; Adding WS_CLIPSIBLINGS disables CS_PARENTDC so the rounded region clips correctly.
+        btn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w100 h" g_TabHeight " +0x200 +0x100 +0x04000000 Center", "")
         btn.SetFont("s" g_ThemeFontSize, g_ThemeFontNameTab)
         btn.OnEvent("Click", SelectSlot)
         host.tabSlotButtons.Push(btn)
-        popoutBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_PopoutButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", "")
+        popoutBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_PopoutButtonWidth " h" g_TabHeight " +0x200 +0x100 +0x04000000 Center", "")
         popoutBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
         popoutBtn.Opt("c" g_ThemeIconColor)
         popoutBtn.OnEvent("Click", PopOutSlot)
         host.tabSlotPopoutButtons.Push(popoutBtn)
-        closeBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_CloseButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", g_IconClose)
+        closeBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_CloseButtonWidth " h" g_TabHeight " +0x200 +0x100 +0x04000000 Center", g_IconClose)
         closeBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
         closeBtn.Opt("c" g_ThemeIconColor)
         closeBtn.OnEvent("Click", CloseSlot)
