@@ -31,7 +31,7 @@ g_TabSlotMax := 50
 g_CloseButtonWidth := 22
 g_PopoutButtonWidth := 22
 g_TabBarOffsetY := 7
-g_TabCornerRadius := 5
+g_TabPosition   := "top"    ; "top" or "bottom"
 
 ; === THEME (edit these for customization) ===
 g_ThemeBackground      := "1E1E1E"
@@ -59,12 +59,10 @@ g_IconClose  := Chr(0xe894)   ; ChromeClose (replace with your choice from the i
 g_IconPopout := Chr(0xE8A7)   ; OpenInNewWindow
 g_IconMerge  := Chr(0xe944)   ; Back
 
-; === TITLE FILTER ===
-; Regex stripped from raw window titles before they appear as tab labels.
-; Leave g_TitleFilterPattern blank to disable. Use g_TitleFilterReplace to
-; substitute a string instead of just removing the match.
-g_TitleFilterPattern  := ""
-g_TitleFilterReplace  := ""
+; === TITLE FILTERS ===
+; Strip patterns loaded from [TitleFilters] Strip1/Strip2/... in StackTabs.ini.
+; Each is a regex removed from the window title before it appears as a tab label.
+g_TitleStripPatterns  := []
 ; Maximum characters shown in a tab label.
 g_TabTitleMaxLen      := 60
 
@@ -78,21 +76,19 @@ LoadConfigFromIni() {
     global g_WindowTitleMatch, g_TargetExe, g_RefreshInterval, g_CaptureDelayMs, g_TabDisappearGraceMs
     global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight
     global g_HostPadding, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
-    global g_TabSlotMax, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY, g_TabCornerRadius
+    global g_TabSlotMax, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY, g_TabPosition
+    global g_TitleStripPatterns, g_TabTitleMaxLen
     global g_ThemeBackground, g_ThemeTabBarBg, g_ThemeTabActiveBg, g_ThemeTabActiveText
     global g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover, g_ThemeTabInactiveText, g_ThemeIconColor, g_ThemeContentBorder
     global g_ThemeWindowText, g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeFontSizeClose
     global g_ThemeIconFont, g_ThemeIconFontSize
     global g_ThemePreset, g_UseCustomTitleBar, g_TitleBarHeight
-    global g_TitleFilterPattern, g_TitleFilterReplace, g_TabTitleMaxLen
     try {
         g_WindowTitleMatch := IniRead(iniPath, "General", "WindowTitleMatch", g_WindowTitleMatch)
         g_TargetExe := IniRead(iniPath, "General", "TargetExe", g_TargetExe)
         g_RefreshInterval := Integer(IniRead(iniPath, "General", "RefreshInterval", g_RefreshInterval))
         g_CaptureDelayMs := Integer(IniRead(iniPath, "General", "CaptureDelayMs", g_CaptureDelayMs))
         g_TabDisappearGraceMs := Integer(IniRead(iniPath, "General", "TabDisappearGraceMs", g_TabDisappearGraceMs))
-        g_TitleFilterPattern := IniRead(iniPath, "General", "TitleFilterPattern", g_TitleFilterPattern)
-        g_TitleFilterReplace := IniRead(iniPath, "General", "TitleFilterReplace", g_TitleFilterReplace)
         g_HostTitle := IniRead(iniPath, "Layout", "HostTitle", g_HostTitle)
         g_HostWidth := Integer(IniRead(iniPath, "Layout", "HostWidth", g_HostWidth))
         g_HostHeight := Integer(IniRead(iniPath, "Layout", "HostHeight", g_HostHeight))
@@ -109,7 +105,7 @@ LoadConfigFromIni() {
         g_PopoutButtonWidth := Integer(IniRead(iniPath, "Layout", "PopoutButtonWidth", g_PopoutButtonWidth))
         g_TabBarOffsetY := Integer(IniRead(iniPath, "Layout", "TabBarOffsetY", g_TabBarOffsetY))
         g_TabTitleMaxLen := Integer(IniRead(iniPath, "Layout", "TabTitleMaxLen", g_TabTitleMaxLen))
-        g_TabCornerRadius := Integer(IniRead(iniPath, "Layout", "TabCornerRadius", g_TabCornerRadius))
+        g_TabPosition := IniRead(iniPath, "Layout", "TabPosition", g_TabPosition)
         g_ThemePreset := IniRead(iniPath, "Theme", "Preset", g_ThemePreset)
         g_ThemeBackground := IniRead(iniPath, "Theme", "Background", g_ThemeBackground)
         g_ThemeTabBarBg := IniRead(iniPath, "Theme", "TabBarBg", g_ThemeTabBarBg)
@@ -129,6 +125,16 @@ LoadConfigFromIni() {
         g_ThemeIconFontSize := Integer(IniRead(iniPath, "Theme", "IconFontSize", g_ThemeIconFontSize))
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", g_UseCustomTitleBar ? "1" : "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", g_TitleBarHeight))
+    }
+    ; Load strip patterns from [TitleFilters] section (Strip1, Strip2, ...)
+    g_TitleStripPatterns := []
+    i := 1
+    loop {
+        val := IniRead(iniPath, "TitleFilters", "Strip" i, "")
+        if val = ""
+            break
+        g_TitleStripPatterns.Push(val)
+        i++
     }
 }
 
@@ -292,12 +298,17 @@ CloseWindowReliably(topHwnd, contentHwnd := "") {
 
 GetClientWidth(hwnd) {
     try {
-        clientX := 0
-        clientY := 0
-        clientW := 0
-        clientH := 0
-        WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " hwnd)
-        return clientW
+        WinGetClientPos(,, &w,, "ahk_id " hwnd)
+        return w
+    } catch {
+        return 0
+    }
+}
+
+GetClientHeight(hwnd) {
+    try {
+        WinGetClientPos(,,, &h, "ahk_id " hwnd)
+        return h
     } catch {
         return 0
     }
@@ -415,6 +426,8 @@ HostGuiClosed(host, *) {
                 break
             }
         }
+        if host.HasProp("iconHandle") && host.iconHandle
+            DllCall("DestroyIcon", "ptr", host.iconHandle)
         host.gui.Destroy()
     } else {
         CleanupAll()
@@ -425,7 +438,7 @@ HostGuiClosed(host, *) {
 HostGuiResized(host, guiObj, minMax, width, height) {
     if minMax = -1
         return
-    LayoutTabButtons(host, width)
+    LayoutTabButtons(host, width, height)
     ShowOnlyActiveTab(host)
 }
 
@@ -933,10 +946,10 @@ TransferTrackedWindow(sourceHost, destHost, tabId) {
     return true
 }
 
-LayoutTabButtons(host, windowWidth := 0) {
-    global g_HostWidth, g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
+LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
+    global g_HostWidth, g_HostHeight, g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
     global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabSlotMax, g_HeaderHeight, g_TabBarOffsetY
-    global g_UseCustomTitleBar, g_TitleBarHeight
+    global g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
 
     if !host || !host.gui
         return
@@ -951,7 +964,16 @@ LayoutTabButtons(host, windowWidth := 0) {
     if !windowWidth
         windowWidth := g_HostWidth
 
-    tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+    if g_TabPosition = "bottom" {
+        if !windowHeight {
+            windowHeight := GetClientHeight(host.hwnd)
+            if !windowHeight
+                windowHeight := g_HostHeight
+        }
+        tabBarY := windowHeight - g_HeaderHeight
+    } else {
+        tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+    }
     if host.HasProp("titleBarBg") && host.titleBarBg {
         host.titleBarBg.Move(0, 0, windowWidth, g_TitleBarHeight)
         host.titleText.Move(8, 0, windowWidth - 60, g_TitleBarHeight)
@@ -978,23 +1000,20 @@ LayoutTabButtons(host, windowWidth := 0) {
     }
 
     global g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeFontSizeClose, g_ThemeIconColor
-    global g_ThemeIconFont, g_ThemeIconFontSize, g_IconClose, g_IconPopout, g_IconMerge, g_TabCornerRadius
+    global g_ThemeIconFont, g_ThemeIconFontSize, g_IconClose, g_IconPopout, g_IconMerge
     tabBtnY := tabBarY + g_TabBarOffsetY
     needed := Min(tabCount, g_TabSlotMax)
     while host.tabSlotButtons.Length < needed {
-        ; WS_CLIPSIBLINGS (0x04000000) is required to make SetWindowRgn work on Static controls.
-        ; Static controls use CS_PARENTDC by default, which conflicts with custom window regions.
-        ; Adding WS_CLIPSIBLINGS disables CS_PARENTDC so the rounded region clips correctly.
-        btn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w100 h" g_TabHeight " +0x200 +0x100 +0x04000000 Center", "")
+        btn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w100 h" g_TabHeight " +0x200 +0x100 Center", "")
         btn.SetFont("s" g_ThemeFontSize, g_ThemeFontNameTab)
         btn.OnEvent("Click", SelectSlot)
         host.tabSlotButtons.Push(btn)
-        popoutBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_PopoutButtonWidth " h" g_TabHeight " +0x200 +0x100 +0x04000000 Center", "")
+        popoutBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_PopoutButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", "")
         popoutBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
         popoutBtn.Opt("c" g_ThemeIconColor)
         popoutBtn.OnEvent("Click", PopOutSlot)
         host.tabSlotPopoutButtons.Push(popoutBtn)
-        closeBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_CloseButtonWidth " h" g_TabHeight " +0x200 +0x100 +0x04000000 Center", g_IconClose)
+        closeBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_CloseButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", g_IconClose)
         closeBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
         closeBtn.Opt("c" g_ThemeIconColor)
         closeBtn.OnEvent("Click", CloseSlot)
@@ -1041,8 +1060,6 @@ LayoutTabButtons(host, windowWidth := 0) {
         closeBtn.Visible := true
         host.tabCloseButtons[tabId] := closeBtn
 
-        ApplyTabRegions(btn.Hwnd, titleWidth, closeBtn.Hwnd, g_CloseButtonWidth, g_TabHeight, g_TabCornerRadius)
-
         x += tabWidth + g_TabGap
     }
 
@@ -1076,29 +1093,6 @@ PopOutSlot(ctrl, *) {
     }
 }
 
-; Apply rounded corners to a tab's label (left-rounded) and close button (right-rounded)
-; using pure GDI region calls — no external DLLs required.
-ApplyTabRegions(btnHwnd, btnW, closeBtnHwnd, closeBtnW, h, r) {
-    if r <= 0 {
-        DllCall("SetWindowRgn", "Ptr", btnHwnd,      "Ptr", 0, "Int", true)
-        DllCall("SetWindowRgn", "Ptr", closeBtnHwnd, "Ptr", 0, "Int", true)
-        return
-    }
-    ; Label button: left corners rounded, right corners square.
-    ; Build: rounded-rect UNION right-edge rect (fills in the rounded-in right corners).
-    hRgn := DllCall("CreateRoundRectRgn", "Int", 0, "Int", 0, "Int", btnW + 1, "Int", h + 1, "Int", r * 2, "Int", r * 2, "Ptr")
-    hFill := DllCall("CreateRectRgn", "Int", btnW - r, "Int", 0, "Int", btnW + 1, "Int", h + 1, "Ptr")
-    DllCall("CombineRgn", "Ptr", hRgn, "Ptr", hRgn, "Ptr", hFill, "Int", 2)   ; RGN_OR
-    DllCall("DeleteObject", "Ptr", hFill)
-    DllCall("SetWindowRgn", "Ptr", btnHwnd, "Ptr", hRgn, "Int", true)         ; OS takes ownership of hRgn
-
-    ; Close button: right corners rounded, left corners square.
-    hRgn2 := DllCall("CreateRoundRectRgn", "Int", 0, "Int", 0, "Int", closeBtnW + 1, "Int", h + 1, "Int", r * 2, "Int", r * 2, "Ptr")
-    hFill2 := DllCall("CreateRectRgn", "Int", 0, "Int", 0, "Int", r, "Int", h + 1, "Ptr")
-    DllCall("CombineRgn", "Ptr", hRgn2, "Ptr", hRgn2, "Ptr", hFill2, "Int", 2)  ; RGN_OR
-    DllCall("DeleteObject", "Ptr", hFill2)
-    DllCall("SetWindowRgn", "Ptr", closeBtnHwnd, "Ptr", hRgn2, "Int", true)   ; OS takes ownership of hRgn2
-}
 
 CheckTabHoverAll() {
     MouseGetPos(, , , &ctrlHwnd, 2)
@@ -1359,31 +1353,38 @@ UpdateHostTitle(host) {
     host.gui.Title := title
     if host.HasProp("titleText") && host.titleText
         host.titleText.Text := title
+    UpdateHostIcon(host)
 }
 
 GetEmbedRect(host, &x, &y, &w, &h) {
     global g_HostWidth, g_HostHeight, g_HostPadding, g_HeaderHeight
-    global g_UseCustomTitleBar, g_TitleBarHeight
+    global g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
 
     x := g_HostPadding
-    headerTotal := g_HeaderHeight + (g_UseCustomTitleBar ? g_TitleBarHeight : 0)
-    y := headerTotal + g_HostPadding
+    customTitleH := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+
+    if g_TabPosition = "bottom"
+        y := customTitleH + g_HostPadding
+    else
+        y := customTitleH + g_HeaderHeight + g_HostPadding
 
     if host.hwnd && WinExist("ahk_id " host.hwnd) {
         try {
-            clientX := 0
-            clientY := 0
-            clientW := 0
-            clientH := 0
-            WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " host.hwnd)
+            WinGetClientPos(,, &clientW, &clientH, "ahk_id " host.hwnd)
             w := Max(200, clientW - (g_HostPadding * 2))
-            h := Max(140, clientH - y - g_HostPadding)
+            if g_TabPosition = "bottom"
+                h := Max(140, clientH - y - g_HeaderHeight - g_HostPadding)
+            else
+                h := Max(140, clientH - y - g_HostPadding)
             return
         }
     }
 
     w := Max(200, g_HostWidth - (g_HostPadding * 2))
-    h := Max(140, g_HostHeight - y - g_HostPadding)
+    if g_TabPosition = "bottom"
+        h := Max(140, g_HostHeight - y - g_HeaderHeight - g_HostPadding)
+    else
+        h := Max(140, g_HostHeight - y - g_HostPadding)
 }
 
 CleanupAll(*) {
@@ -1515,6 +1516,121 @@ RedrawHostWindow(host) {
     DllCall("RedrawWindow", "ptr", host.hwnd, "ptr", 0, "ptr", 0, "uint", flags)
 }
 
+; ============ ICON ============
+
+UpdateHostIcon(host) {
+    global g_ThemeTabActiveBg
+
+    lastId := host.HasProp("lastIconTabId") ? host.lastIconTabId : ""
+    if lastId = host.activeTabId
+        return
+    host.lastIconTabId := host.activeTabId
+
+    if host.HasProp("iconHandle") && host.iconHandle {
+        DllCall("DestroyIcon", "ptr", host.iconHandle)
+        host.iconHandle := 0
+    }
+
+    if !host.activeTabId || !host.tabRecords.Has(host.activeTabId)
+        return
+
+    record := host.tabRecords[host.activeTabId]
+    hSource := GetWindowBestIcon(record.topHwnd)
+    hBadged := CreateBadgedIcon(hSource, g_ThemeTabActiveBg)
+    if !hBadged
+        return
+
+    host.iconHandle := hBadged
+    SendMessage(0x0080, 0, hBadged,, "ahk_id " host.hwnd)  ; WM_SETICON ICON_SMALL
+    SendMessage(0x0080, 1, hBadged,, "ahk_id " host.hwnd)  ; WM_SETICON ICON_BIG
+}
+
+GetWindowBestIcon(hwnd) {
+    hIcon := 0
+    try hIcon := SendMessage(0x7F, 2, 0,, "ahk_id " hwnd)  ; WM_GETICON ICON_SMALL2
+    if !hIcon
+        try hIcon := SendMessage(0x7F, 1, 0,, "ahk_id " hwnd)  ; WM_GETICON ICON_BIG
+    if !hIcon
+        try hIcon := SendMessage(0x7F, 0, 0,, "ahk_id " hwnd)  ; WM_GETICON ICON_SMALL
+    if !hIcon {
+        fnName := (A_PtrSize = 8) ? "GetClassLongPtr" : "GetClassLong"
+        hIcon := DllCall(fnName, "ptr", hwnd, "int", -14, "ptr")  ; GCLP_HICON
+        if !hIcon
+            hIcon := DllCall(fnName, "ptr", hwnd, "int", -34, "ptr")  ; GCLP_HICONSM
+    }
+    return hIcon
+}
+
+; Draws hSourceIcon onto a 32x32 bitmap and overlays a coloured dot badge
+; in the bottom-right corner.  Returns an HICON the caller owns (DestroyIcon when done).
+CreateBadgedIcon(hSourceIcon, badgeHex) {
+    sz := 32
+
+    hScreenDC := DllCall("GetDC", "ptr", 0, "ptr")
+    hMemDC    := DllCall("CreateCompatibleDC", "ptr", hScreenDC, "ptr")
+    hBmp      := DllCall("CreateCompatibleBitmap", "ptr", hScreenDC, "int", sz, "int", sz, "ptr")
+    DllCall("ReleaseDC", "ptr", 0, "ptr", hScreenDC)
+    hOldBmp   := DllCall("SelectObject", "ptr", hMemDC, "ptr", hBmp, "ptr")
+
+    ; Black background so icon transparency renders naturally
+    RECT := Buffer(16, 0)
+    NumPut("int", sz, RECT, 8), NumPut("int", sz, RECT, 12)
+    DllCall("FillRect", "ptr", hMemDC, "ptr", RECT, "ptr", DllCall("GetStockObject", "int", 4, "ptr"))
+
+    if hSourceIcon
+        DllCall("DrawIconEx", "ptr", hMemDC, "int", 0, "int", 0, "ptr", hSourceIcon
+            , "int", sz, "int", sz, "uint", 0, "ptr", 0, "uint", 3)
+
+    ; Parse badge color RRGGBB -> COLORREF 0x00BBGGRR
+    r := Integer("0x" SubStr(badgeHex, 1, 2))
+    g := Integer("0x" SubStr(badgeHex, 3, 2))
+    b := Integer("0x" SubStr(badgeHex, 5, 2))
+    badgeColor := r | (g << 8) | (b << 16)
+
+    ; White border circle (1 px larger all around)
+    bsz := 10
+    hNullPen    := DllCall("GetStockObject", "int", 8, "ptr")  ; NULL_PEN
+    hWhiteBrush := DllCall("CreateSolidBrush", "uint", 0xFFFFFF, "ptr")
+    hOldPen   := DllCall("SelectObject", "ptr", hMemDC, "ptr", hNullPen, "ptr")
+    hOldBrush := DllCall("SelectObject", "ptr", hMemDC, "ptr", hWhiteBrush, "ptr")
+    DllCall("Ellipse", "ptr", hMemDC, "int", sz-bsz-1, "int", sz-bsz-1, "int", sz, "int", sz)
+    DllCall("DeleteObject", "ptr", hWhiteBrush)
+
+    ; Accent-coloured fill
+    hBadgeBrush := DllCall("CreateSolidBrush", "uint", badgeColor, "ptr")
+    DllCall("SelectObject", "ptr", hMemDC, "ptr", hBadgeBrush, "ptr")
+    DllCall("Ellipse", "ptr", hMemDC, "int", sz-bsz, "int", sz-bsz, "int", sz, "int", sz)
+    DllCall("DeleteObject", "ptr", hBadgeBrush)
+
+    DllCall("SelectObject", "ptr", hMemDC, "ptr", hOldBrush, "ptr")
+    DllCall("SelectObject", "ptr", hMemDC, "ptr", hOldPen, "ptr")
+
+    ; Monochrome AND-mask — all black = fully opaque
+    hMaskDC  := DllCall("CreateCompatibleDC", "ptr", 0, "ptr")
+    hMaskBmp := DllCall("CreateBitmap", "int", sz, "int", sz, "uint", 1, "uint", 1, "ptr", 0, "ptr")
+    hOldMask := DllCall("SelectObject", "ptr", hMaskDC, "ptr", hMaskBmp, "ptr")
+    DllCall("PatBlt", "ptr", hMaskDC, "int", 0, "int", 0, "int", sz, "int", sz, "uint", 0x00000042)
+    DllCall("SelectObject", "ptr", hMaskDC, "ptr", hOldMask, "ptr")
+    DllCall("DeleteDC", "ptr", hMaskDC)
+
+    ; ICONINFO layout: fIcon(4), xHotspot(4), yHotspot(4), [pad4 on x64], hbmMask(ptr), hbmColor(ptr)
+    maskOff  := (A_PtrSize = 8) ? 16 : 12
+    colorOff := (A_PtrSize = 8) ? 24 : 16
+    ICONINFO  := Buffer((A_PtrSize = 8) ? 32 : 20, 0)
+    NumPut("int", 1,        ICONINFO, 0)
+    NumPut("ptr", hMaskBmp, ICONINFO, maskOff)
+    NumPut("ptr", hBmp,     ICONINFO, colorOff)
+    hIcon := DllCall("CreateIconIndirect", "ptr", ICONINFO, "ptr")
+
+    DllCall("SelectObject", "ptr", hMemDC, "ptr", hOldBmp, "ptr")
+    DllCall("DeleteDC", "ptr", hMemDC)
+    if !hIcon {
+        DllCall("DeleteObject", "ptr", hBmp)
+        DllCall("DeleteObject", "ptr", hMaskBmp)
+    }
+    return hIcon
+}
+
 AppendDebugLog(text) {
     global g_DebugLogPath
     FileAppend("[" FormatTime(, "yyyy-MM-dd HH:mm:ss") "]`r`n" text, g_DebugLogPath, "UTF-8")
@@ -1537,10 +1653,10 @@ NormalizeTitle(title) {
 }
 
 FilterTitle(title) {
-    global g_TitleFilterPattern, g_TitleFilterReplace
-    if g_TitleFilterPattern = ""
-        return title
-    return RegExReplace(title, g_TitleFilterPattern, g_TitleFilterReplace)
+    global g_TitleStripPatterns
+    for pattern in g_TitleStripPatterns
+        title := RegExReplace(title, pattern, "")
+    return Trim(title)
 }
 
 ShortTitle(title, maxLen := 28) {

@@ -27,8 +27,9 @@ g_WindowTitleMatch := "Excel"            ; Excel workbooks
 - **Auto-refresh**  Windows are added and removed automatically
 - **Single active view**  Only one embedded window is shown at a time
 - **Lightweight tabs**  Click a tab button to switch between captured windows
-- **Pop-out windows**  Extract a tab into its own StackTabs window for side-by-side comparison; popped-out tabs stay independent and are not re-captured
-- **Merge back**  Combine a popped-out tab back into the main stack
+- **Pop-out windows** — Extract a tab into its own StackTabs window for side-by-side comparison; popped-out tabs stay independent and are not re-captured
+- **Merge back** — Combine a popped-out tab back into the main stack
+- **Taskbar icon** — Uses the active tab's application icon with a coloured badge so you can tell StackTabs apart from the original app
 
 ## Hotkeys
 
@@ -55,8 +56,8 @@ You can configure StackTabs by editing variables at the top of `StackTabs.ahk` o
 | `g_RefreshInterval` | `200` | How often to rescan for windows (ms) |
 | `g_CaptureDelayMs` | `900` | How long a matching window must exist before it is embedded |
 | `g_TabDisappearGraceMs` | `300` | Grace period before removing a tab whose window disappeared |
-| `g_TitleFilterPattern` | `""` | Regex to strip from window titles before showing in tabs (leave blank to disable) |
-| `g_TitleFilterReplace` | `""` | Replacement string for the regex match (empty = remove) |
+
+**Title filters** — In `[TitleFilters]`, add `Strip1`, `Strip2`, etc. Each is a regex pattern removed from window titles before display. Example: `Strip1=^App - \s*` strips a leading "App - " prefix.
 
 ### Layout
 
@@ -68,6 +69,7 @@ You can configure StackTabs by editing variables at the top of `StackTabs.ahk` o
 | `g_TabHeight` | `30` | Tab button height |
 | `g_TabSlotMax` | `50` | Maximum number of tabs shown (extra tabs are hidden) |
 | `g_TabTitleMaxLen` | `60` | Max characters in tab label (truncated with ellipsis) |
+| `g_TabPosition` | `"top"` | Tab bar position: `top` or `bottom` |
 | `g_UseCustomTitleBar` | `false` | Use borderless custom title bar (set to `1` in INI to enable) |
 | `g_TitleBarHeight` | `28` | Custom title bar height when enabled |
 
