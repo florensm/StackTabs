@@ -73,26 +73,15 @@ You can configure StackTabs by editing variables at the top of `StackTabs.ahk` o
 | `g_UseCustomTitleBar` | `false` | Use borderless custom title bar (set to `1` in INI to enable) |
 | `g_TitleBarHeight` | `28` | Custom title bar height when enabled |
 
-### Theme
+### Themes
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `g_ThemePreset` | `"dark"` | Preset: `dark`, `light`, or `high-contrast` |
-| `g_ThemeBackground` | `"1E1E1E"` | Host window background (hex) |
-| `g_ThemeTabBarBg` | `"252526"` | Tab bar background |
-| `g_ThemeTabActiveBg` | `"2D7DFF"` | Active tab background |
-| `g_ThemeTabInactiveBg` | `"30343B"` | Inactive tab background |
-| `g_ThemeTabInactiveBgHover` | `"3C4049"` | Inactive tab hover background |
-| `g_ThemeContentBorder` | `"404040"` | Content area border color |
-| `g_ThemeFontName` | `"Segoe UI"` | Font family |
+Themes are `.ini` files in the `themes\` folder. Switch themes from the tray menu: right-click the StackTabs icon → **Theme** → choose a theme. The selection is saved to `StackTabs.ini` under `[Theme]` → `ThemeFile=`.
 
-### Theme presets (colors applied)
+**Built-in themes** include `dark`, `light`, `high-contrast`, `everforest`, `rose-pine`, `one-dark`, `tokyo-night`, `dracula`, `catppuccin-mocha`, `spacious`, `compact`, and more.
 
-| Preset | Background | Tab bar | Active tab | Inactive tab | Text |
-|--------|------------|---------|------------|--------------|------|
-| `dark` | 1E1E1E | 252526 | 2D7DFF (blue) | 30343B | FFFFFF / D8DEE9 |
-| `light` | F3F3F3 | E8E8E8 | 0078D4 (blue) | E1E1E1 | 333333 |
-| `high-contrast` | 000000 | 1A1A1A | FFFF00 (yellow) | 333333 | FFFFFF / 000000 |
+**Custom themes:** Add your own `.ini` files to `themes\` or `themes\custom\`. Both folders are auto-discovered. Use **Open themes folder** from the tray menu to open the themes directory.
+
+**Creating a custom theme:** Copy an existing theme (e.g. `dark.ini`), rename it, and edit the colors. Theme files use `[Theme]` for colors (Background, TabBarBg, TabActiveBg, TabActiveText, TabInactiveBg, TabInactiveBgHover, TabInactiveText, IconColor, ContentBorder, WindowText, FontName, FontNameTab, FontSize, FontSizeClose, IconFontSize) and optional `[Layout]` for spacing (HostPadding, HeaderHeight, TabGap, MinTabWidth, MaxTabWidth, TabHeight, TabIndicatorHeight, TabPosition). See `themes\README.md` for the full key reference.
 
 ## How It Works
 
