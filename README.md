@@ -11,18 +11,8 @@ A lightweight AutoHotkey v2 script that collects all matching windows into one h
 
 ## Setup
 
-1. Edit `StackTabs.ahk` and set `g_WindowTitleMatch` to part of your program's window title:
-
-```autohotkey
-; Examples:
-g_WindowTitleMatch := "Powershell"        ; PowerShell windows
-g_WindowTitleMatch := "Notepad"          ; Notepad windows
-g_WindowTitleMatch := "Chrome"           ; Chrome browser
-g_WindowTitleMatch := "Remote Desktop"   ; RDP sessions
-g_WindowTitleMatch := "Excel"            ; Excel workbooks
-```
-
-2. Run the script (double-click or from AHK).
+1. Copy `StackTabs.ini.example` to `StackTabs.ini` and set `WindowTitleMatch` to part of your target window's title.
+2. Run `StackTabs.ahk` (double-click or via AutoHotkey).
 
 ## Features
 
@@ -113,16 +103,8 @@ StackTabs uses standard Win32 window APIs to reparent matching windows into a cu
 | Unusual window hierarchy | Use Win+Shift+D to inspect; adjust `ScoreContentCandidate` if needed |
 | Focus / keyboard shortcuts | May behave differently in embedded window depending on target app |
 
-## Future Ideas
-
-- Mouse wheel over tab bar to switch tabs
-- Middle-click tab to close; right-click context menu
-- Remember window position and last active tab between sessions
-- Tab overflow: scroll or dropdown when too many tabs
-- Configurable hotkeys and capture delay
-- Drag to reorder tabs
-
 ## Notes
 
 - Some applications do not like being re-parented and may repaint poorly
-- Switching tabs hides and shows embedded windows; repaint behavior depends on the target application
+- Switching tabs hides and shows embedded windows; repaint behaviour depends on the target application
+- Chromium-based browsers (Chrome, Edge) actively fight re-parenting and are not reliably supported
