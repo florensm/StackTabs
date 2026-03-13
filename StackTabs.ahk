@@ -108,7 +108,7 @@ LoadConfigFromIni() {
         g_TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", g_TabIndicatorHeight))
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", g_UseCustomTitleBar ? "1" : "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", g_TitleBarHeight))
-        g_ActiveThemeFile := IniRead(iniPath, "Theme", "ThemeFile", "dark.ini")
+        g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", "dark.ini"))
     }
     themePath := A_ScriptDir "\themes\" g_ActiveThemeFile
     if !FileExist(themePath)
@@ -238,8 +238,8 @@ BuildTrayMenu() {
             fileName := A_LoopFileName
             displayName := ThemeDisplayName(fileName)
             themeSubMenu.Add(displayName, ThemeMenuHandler.Bind(fileName))
-            if StrLower(g_ActiveThemeFile) = StrLower(fileName)
-                themeSubMenu.Check(displayName)
+            if (Trim(fileName) = Trim(g_ActiveThemeFile))
+                try themeSubMenu.Check(displayName)
         }
     }
     A_TrayMenu.Add("Theme", themeSubMenu)
