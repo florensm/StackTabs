@@ -103,11 +103,11 @@ LoadConfigFromIni() {
         g_PopoutButtonWidth := Integer(IniRead(iniPath, "Layout", "PopoutButtonWidth", g_PopoutButtonWidth))
         g_TabBarOffsetY := Integer(IniRead(iniPath, "Layout", "TabBarOffsetY", g_TabBarOffsetY))
         g_TabTitleMaxLen := Integer(IniRead(iniPath, "Layout", "TabTitleMaxLen", g_TabTitleMaxLen))
-        g_TabPosition := IniRead(iniPath, "Layout", "TabPosition", g_TabPosition)
-        g_TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", g_TabIndicatorHeight))
+        g_TabPosition := IniRead(iniPath, "Layout", "TabPosition", "top")
+        g_TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", "3"))
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", g_UseCustomTitleBar ? "1" : "0") = "1")
-        g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", g_TitleBarHeight))
-        g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", g_ActiveThemeFile))
+        g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", "28"))
+        g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", "dark.ini"))
     }
     ; Load strip patterns from [TitleFilters] section (Strip1, Strip2, ...)
     g_TitleStripPatterns := []
@@ -242,6 +242,8 @@ LoadConfigFromIni()
 LoadThemeFromFile(A_ScriptDir "\themes\" g_ActiveThemeFile)
 DetectIconFont()
 BuildTrayMenu()
+if g_UseCustomTitleBar
+    OnMessage(0x83, OnWmNcCalcSize)
 BuildHostInstance(false)  ; create main host
 OnExit(CleanupAll)
 RefreshWindows()
@@ -385,6 +387,24 @@ GetHostForHwnd(hwnd) {
     return ""
 }
 
+; WM_NCCALCSIZE: extend client area into top non-client region to remove white bar (Windows 10/11)
+; OnMessage params: (hwnd, msg, lParam, wParam) per AHK docs
+OnWmNcCalcSize(hwnd, msg, lParam, wParam) {
+    if !wParam || !lParam  ; wParam=1 means valid rects, lParam=struct pointer
+        return
+    for host in GetAllHosts() {
+        if host.hwnd != hwnd
+            continue
+        ; Call DefWindowProc first; it modifies rgrc[0] to the client rect
+        prevProc := DllCall("GetWindowLongPtr", "ptr", hwnd, "int", -4, "ptr")
+        result := DllCall("CallWindowProc", "ptr", prevProc, "ptr", hwnd, "uint", msg, "ptr", wParam, "ptr", lParam, "ptr")
+        ; Shrink top border: move client top up by ~7px (Windows 10/11 padded border)
+        top := NumGet(lParam, 4, "int")
+        NumPut("int", top - 7, lParam, 4)
+        return result
+    }
+}
+
 FindTabByNormalizedTitle(normalizedTitle) {
     if normalizedTitle = ""
         return ""
@@ -453,6 +473,15 @@ BuildHostInstance(isPopout := false) {
     host.hwnd := host.gui.Hwnd
     host.clientHwnd := host.hwnd
     host.gui.Show("w" g_HostWidth " h" g_HostHeight)
+
+    ; Match DWM window border to theme (fixes white/accent bar on Windows 11)
+    if g_UseCustomTitleBar && host.hwnd {
+        try {
+            rgb := Integer("0x" g_ThemeTabBarBg)
+            bgr := ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)
+            DllCall("dwmapi\DwmSetWindowAttribute", "ptr", host.hwnd, "int", 34, "uint*", &bgr, "uint", 4)
+        }
+    }
 
     if isPopout
         g_PopoutHosts.Push(host)
