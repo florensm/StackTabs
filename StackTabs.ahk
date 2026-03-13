@@ -128,38 +128,38 @@ LoadThemeFromFile(themePath) {
     global g_ThemeFontSize, g_ThemeFontSizeClose, g_ThemeIconFont, g_ThemeIconFontSize
     global g_HostPadding, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
     global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarOffsetY, g_TabPosition, g_TabIndicatorHeight
-    if !FileExist(themePath)
+    if !FileExist(themePath) {
+        MsgBox "Theme file not found:`n" themePath "`n`nFalling back to built-in dark defaults.", "StackTabs", 0x30
         return
-    try {
-        g_ThemeBackground         := IniRead(themePath, "Theme", "Background",           g_ThemeBackground)
-        g_ThemeTabBarBg           := IniRead(themePath, "Theme", "TabBarBg",             g_ThemeTabBarBg)
-        g_ThemeTabActiveBg        := IniRead(themePath, "Theme", "TabActiveBg",          g_ThemeTabActiveBg)
-        g_ThemeTabActiveText      := IniRead(themePath, "Theme", "TabActiveText",        g_ThemeTabActiveText)
-        g_ThemeTabInactiveBg      := IniRead(themePath, "Theme", "TabInactiveBg",        g_ThemeTabInactiveBg)
-        g_ThemeTabInactiveBgHover := IniRead(themePath, "Theme", "TabInactiveBgHover",   g_ThemeTabInactiveBgHover)
-        g_ThemeTabInactiveText    := IniRead(themePath, "Theme", "TabInactiveText",      g_ThemeTabInactiveText)
-        g_ThemeIconColor          := IniRead(themePath, "Theme", "IconColor",            g_ThemeIconColor)
-        g_ThemeContentBorder      := IniRead(themePath, "Theme", "ContentBorder",        g_ThemeContentBorder)
-        g_ThemeWindowText         := IniRead(themePath, "Theme", "WindowText",           g_ThemeWindowText)
-        g_ThemeFontName           := IniRead(themePath, "Theme", "FontName",             g_ThemeFontName)
-        g_ThemeFontNameTab        := IniRead(themePath, "Theme", "FontNameTab",          g_ThemeFontNameTab)
-        g_ThemeFontSize           := Integer(IniRead(themePath, "Theme", "FontSize",         g_ThemeFontSize))
-        g_ThemeFontSizeClose      := Integer(IniRead(themePath, "Theme", "FontSizeClose",    g_ThemeFontSizeClose))
-        g_ThemeIconFont           := IniRead(themePath, "Theme", "IconFont",             g_ThemeIconFont)
-        g_ThemeIconFontSize       := Integer(IniRead(themePath, "Theme", "IconFontSize",     g_ThemeIconFontSize))
-        ; Optional layout overrides — only applied if the theme file includes a [Layout] section
-        g_HostPadding         := Integer(IniRead(themePath, "Layout", "HostPadding",         g_HostPadding))
-        g_HeaderHeight        := Integer(IniRead(themePath, "Layout", "HeaderHeight",         g_HeaderHeight))
-        g_TabGap              := Integer(IniRead(themePath, "Layout", "TabGap",               g_TabGap))
-        g_MinTabWidth         := Integer(IniRead(themePath, "Layout", "MinTabWidth",           g_MinTabWidth))
-        g_MaxTabWidth         := Integer(IniRead(themePath, "Layout", "MaxTabWidth",           g_MaxTabWidth))
-        g_TabHeight           := Integer(IniRead(themePath, "Layout", "TabHeight",             g_TabHeight))
-        g_CloseButtonWidth    := Integer(IniRead(themePath, "Layout", "CloseButtonWidth",      g_CloseButtonWidth))
-        g_PopoutButtonWidth   := Integer(IniRead(themePath, "Layout", "PopoutButtonWidth",     g_PopoutButtonWidth))
-        g_TabBarOffsetY       := Integer(IniRead(themePath, "Layout", "TabBarOffsetY",         g_TabBarOffsetY))
-        g_TabIndicatorHeight  := Integer(IniRead(themePath, "Layout", "TabIndicatorHeight",    g_TabIndicatorHeight))
-        g_TabPosition         := IniRead(themePath, "Layout", "TabPosition",                   g_TabPosition)
     }
+    g_ThemeBackground         := IniRead(themePath, "Theme", "Background",           g_ThemeBackground)
+    g_ThemeTabBarBg           := IniRead(themePath, "Theme", "TabBarBg",             g_ThemeTabBarBg)
+    g_ThemeTabActiveBg        := IniRead(themePath, "Theme", "TabActiveBg",          g_ThemeTabActiveBg)
+    g_ThemeTabActiveText      := IniRead(themePath, "Theme", "TabActiveText",        g_ThemeTabActiveText)
+    g_ThemeTabInactiveBg      := IniRead(themePath, "Theme", "TabInactiveBg",        g_ThemeTabInactiveBg)
+    g_ThemeTabInactiveBgHover := IniRead(themePath, "Theme", "TabInactiveBgHover",   g_ThemeTabInactiveBgHover)
+    g_ThemeTabInactiveText    := IniRead(themePath, "Theme", "TabInactiveText",      g_ThemeTabInactiveText)
+    g_ThemeIconColor          := IniRead(themePath, "Theme", "IconColor",            g_ThemeIconColor)
+    g_ThemeContentBorder      := IniRead(themePath, "Theme", "ContentBorder",        g_ThemeContentBorder)
+    g_ThemeWindowText         := IniRead(themePath, "Theme", "WindowText",           g_ThemeWindowText)
+    g_ThemeFontName           := IniRead(themePath, "Theme", "FontName",             g_ThemeFontName)
+    g_ThemeFontNameTab        := IniRead(themePath, "Theme", "FontNameTab",          g_ThemeFontNameTab)
+    g_ThemeFontSize           := Integer(IniRead(themePath, "Theme", "FontSize",     String(g_ThemeFontSize)))
+    g_ThemeFontSizeClose      := Integer(IniRead(themePath, "Theme", "FontSizeClose", String(g_ThemeFontSizeClose)))
+    g_ThemeIconFont           := IniRead(themePath, "Theme", "IconFont",             g_ThemeIconFont)
+    g_ThemeIconFontSize       := Integer(IniRead(themePath, "Theme", "IconFontSize", String(g_ThemeIconFontSize)))
+    ; Optional layout overrides — only applied if the theme file includes a [Layout] section
+    g_HostPadding        := Integer(IniRead(themePath, "Layout", "HostPadding",        String(g_HostPadding)))
+    g_HeaderHeight       := Integer(IniRead(themePath, "Layout", "HeaderHeight",       String(g_HeaderHeight)))
+    g_TabGap             := Integer(IniRead(themePath, "Layout", "TabGap",             String(g_TabGap)))
+    g_MinTabWidth        := Integer(IniRead(themePath, "Layout", "MinTabWidth",        String(g_MinTabWidth)))
+    g_MaxTabWidth        := Integer(IniRead(themePath, "Layout", "MaxTabWidth",        String(g_MaxTabWidth)))
+    g_TabHeight          := Integer(IniRead(themePath, "Layout", "TabHeight",          String(g_TabHeight)))
+    g_CloseButtonWidth   := Integer(IniRead(themePath, "Layout", "CloseButtonWidth",   String(g_CloseButtonWidth)))
+    g_PopoutButtonWidth  := Integer(IniRead(themePath, "Layout", "PopoutButtonWidth",  String(g_PopoutButtonWidth)))
+    g_TabBarOffsetY      := Integer(IniRead(themePath, "Layout", "TabBarOffsetY",      String(g_TabBarOffsetY)))
+    g_TabIndicatorHeight := Integer(IniRead(themePath, "Layout", "TabIndicatorHeight", String(g_TabIndicatorHeight)))
+    g_TabPosition        := IniRead(themePath, "Layout", "TabPosition",                g_TabPosition)
 }
 
 
