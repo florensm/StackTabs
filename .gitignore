@@ -1,6 +1,10 @@
-# User config (copy StackTabs.ini.example to StackTabs.ini to get started)
-StackTabs.ini
+# User config (copy config.ini.example to config.ini to get started)
+config.ini
+session.ini
 
 # Debug / generated files
-StackTabs-discovery.txt
+discovery.txt
 debug-*.log
+
+# Local testing (keep for work, don't push)
+restoration-checklist.md
