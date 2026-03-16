@@ -50,6 +50,8 @@ ActiveTabStyle=full     ; full = active tab has different bg; indicator = only s
 
 ; --- Behavior ---
 ShowOnlyWhenTabs=1       ; 1 = hide to tray when no tabs, show when 1+ (default). 0 = always show
+BringToFrontOnNewTab=0   ; 1 = bring host window to front when a new window is stacked (even if behind other windows). 0 = no focus steal
+AlwaysOnTop=0           ; 1 = host window stays on top of other windows. 0 = normal z-order
 UseCustomTitleBar=0      ; 1 = custom title bar (matches theme). 0 = system title bar
 TitleBarHeight=28
 
