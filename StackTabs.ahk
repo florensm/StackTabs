@@ -633,6 +633,8 @@ BuildHostInstance(isPopout := false) {
     showOpts := "w" g_HostWidth " h" g_HostHeight
     if !isPopout && g_HostX >= 0 && g_HostY >= 0
         showOpts := "x" g_HostX " y" g_HostY " " showOpts
+    if isPopout
+        showOpts .= " Hide"  ; Keep hidden until ArrangeHostsSideBySide positions it
     host.gui.Show(showOpts)
     ; Keep hidden when ShowOnlyWhenTabs (host stays in tray until 1+ tabs)
     if !isPopout && g_ShowOnlyWhenTabs
@@ -680,10 +682,35 @@ HostGuiClosed(host, *) {
 }
 
 HostGuiResized(host, guiObj, minMax, width, height) {
+    global g_MainHost, g_SessionPath, g_HostX, g_HostY, g_HostWidth, g_HostHeight
     if minMax = -1
         return
     LayoutTabButtons(host, width, height)
     ShowOnlyActiveTab(host)
+    ; Keep globals and session in sync with actual window position/size (main host only)
+    if host = g_MainHost && host.hwnd && WinExist("ahk_id " host.hwnd) {
+        try {
+            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " host.hwnd)
+            g_HostX := wx
+            g_HostY := wy
+            g_HostWidth := ww
+            g_HostHeight := wh
+            SetTimer(SaveSessionDeferred, -300)  ; Debounce: save 300ms after last resize
+        }
+    }
+}
+
+SaveSessionDeferred(*) {
+    global g_MainHost, g_SessionPath
+    if !IsObject(g_MainHost) || !g_MainHost.hwnd || !WinExist("ahk_id " g_MainHost.hwnd)
+        return
+    try {
+        WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " g_MainHost.hwnd)
+        IniWrite(wx, g_SessionPath, "Session", "WindowX")
+        IniWrite(wy, g_SessionPath, "Session", "WindowY")
+        IniWrite(ww, g_SessionPath, "Session", "WindowW")
+        IniWrite(wh, g_SessionPath, "Session", "WindowH")
+    }
 }
 
 IsReadyToStack(hwnd) {
@@ -768,8 +795,11 @@ WatchdogPostStackUpdate(*) {
     global g_MainHost, g_ShowOnlyWhenTabs
     if !g_MainHost
         return
-    if g_ShowOnlyWhenTabs && g_MainHost.tabOrder.Length >= 1
-        g_MainHost.gui.Show("NoActivate")
+    ; Only call Show when the window is actually hidden — avoids repositioning an already-visible window
+    if g_ShowOnlyWhenTabs && g_MainHost.tabOrder.Length >= 1 {
+        if !WinExist("ahk_id " g_MainHost.hwnd)  ; hidden (DetectHiddenWindows Off)
+            g_MainHost.gui.Show("NoActivate")
+    }
     LayoutTabButtons(g_MainHost)
     ShowOnlyActiveTab(g_MainHost)
     UpdateHostTitle(g_MainHost)
@@ -940,16 +970,17 @@ RefreshWindows(*) {
         UpdateHostTitle(host)
     }
 
-    ; When ShowOnlyWhenTabs: hide when 0 tabs, show when 1+ tabs.
+    ; When ShowOnlyWhenTabs: hide when 0 tabs, show when 1+ tabs (only if hidden).
     if g_ShowOnlyWhenTabs && g_MainHost && DllCall("IsWindow", "ptr", g_MainHost.hwnd) {
         liveCount := 0
         for tabId in g_MainHost.tabOrder {
             if g_MainHost.tabRecords.Has(tabId) && IsWindowExists(g_MainHost.tabRecords[tabId].contentHwnd)
                 liveCount++
         }
-        if liveCount >= 1
-            g_MainHost.gui.Show("NoActivate")
-        else
+        if liveCount >= 1 {
+            if !WinExist("ahk_id " g_MainHost.hwnd)
+                g_MainHost.gui.Show("NoActivate")
+        } else
             g_MainHost.gui.Hide()
     }
 }
@@ -1711,10 +1742,8 @@ ArrangeHostsSideBySide(host1, host2) {
     try {
         WinGetPos(&x1, &y1, &w1, &h1, "ahk_id " host1.hwnd)
         gap := 8
-        x2 := x1 + w1 + gap
-        y2 := y1
 
-        ; Clamp to the work area of the monitor containing host1
+        ; Work area of the monitor containing host1
         cx := x1 + w1 // 2
         cy := y1 + h1 // 2
         workL := 0, workT := 0, workR := A_ScreenWidth, workB := A_ScreenHeight
@@ -1725,9 +1754,22 @@ ArrangeHostsSideBySide(host1, host2) {
                 break
             }
         }
-        ; Prefer right of host1; if it doesn't fit, try left; then clamp
-        if x2 + w1 > workR
-            x2 := x1 - w1 - gap
+
+        ; Place popout in the opposite half when main host is tiled (avoids off-screen or cramped placement)
+        workW := workR - workL
+        workH := workB - workT
+        hostCenter := x1 + w1 // 2
+        workCenter := workL + workW // 2
+
+        if (hostCenter >= workCenter) {
+            ; Main host is on right half — put popout on left half
+            x2 := workL
+            y2 := Max(workT, Min(y1, workB - h1))
+        } else {
+            ; Main host is on left half — put popout on right half
+            x2 := workR - w1
+            y2 := Max(workT, Min(y1, workB - h1))
+        }
         x2 := Max(workL, Min(x2, workR - w1))
         y2 := Max(workT, Min(y2, workB - h1))
 
@@ -1779,7 +1821,7 @@ ShowOnlyActiveTab(host) {
             continue
 
         if tabId = host.activeTabId {
-            flags := 0x0020 | 0x0004 | 0x0010
+            flags := 0x0020 | 0x0004 | 0x0010 | 0x0100  ; SWP_NOCOPYBITS forces invalidate
             DllCall("SetWindowPos", "ptr", record.contentHwnd, "ptr", 0
                 , "int", areaX, "int", areaY, "int", areaW, "int", areaH
                 , "uint", flags)
@@ -1792,6 +1834,8 @@ ShowOnlyActiveTab(host) {
 
     UpdateTabButtonStyles(host)
     host.lastRefreshActiveTabId := host.activeTabId
+    if host.activeTabId != ""
+        SetTimer(DeferredRepaintCheck.Bind(host), -50)
 }
 
 UpdateTabButtonStyles(host) {
@@ -2038,6 +2082,7 @@ RedrawEmbeddedWindow(hwnd) {
 
     flags := 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400
     DllCall("RedrawWindow", "ptr", hwnd, "ptr", 0, "ptr", 0, "uint", flags)
+    DllCall("UpdateWindow", "ptr", hwnd)
 }
 
 RedrawHostWindow(host) {
@@ -2046,6 +2091,18 @@ RedrawHostWindow(host) {
 
     flags := 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400
     DllCall("RedrawWindow", "ptr", host.hwnd, "ptr", 0, "ptr", 0, "uint", flags)
+    DllCall("UpdateWindow", "ptr", host.hwnd)
+}
+
+DeferredRepaintCheck(host, *) {
+    if !host || !host.hwnd || !WinExist("ahk_id " host.hwnd)
+        return
+    if host.activeTabId != "" && host.tabRecords.Has(host.activeTabId) {
+        record := host.tabRecords[host.activeTabId]
+        if IsWindowExists(record.contentHwnd)
+            RedrawEmbeddedWindow(record.contentHwnd)
+    }
+    RedrawHostWindow(host)
 }
 
 ; ============ ICON ============
