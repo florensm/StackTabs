@@ -18,9 +18,10 @@ g_WindowTitleMatches := []
 ; Optional EXE filter. Leave blank to match any process.
 g_TargetExe := ""
 
-; How often to scan for new / replaced windows.
-g_RefreshInterval := 200
-g_CaptureDelayMs := 900
+; Shell Hook + Slow Sweep: event-driven discovery; fallback scan interval.
+g_SlowSweepInterval := 3000
+g_StackDelayMs := 100       ; Minimum wait before stacking; title-stability check provides additional protection
+g_WatchdogMaxMs := 1500
 g_TabDisappearGraceMs := 300
 
 ; Host window defaults.
@@ -74,7 +75,7 @@ LoadConfigFromIni() {
     if !FileExist(g_ConfigPath)
         return
     iniPath := g_ConfigPath
-    global g_WindowTitleMatches, g_TargetExe, g_RefreshInterval, g_CaptureDelayMs, g_TabDisappearGraceMs, g_DebugDiscovery
+    global g_WindowTitleMatches, g_TargetExe, g_SlowSweepInterval, g_StackDelayMs, g_WatchdogMaxMs, g_TabDisappearGraceMs, g_DebugDiscovery
     global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight, g_HostX, g_HostY
     global g_HostPadding, g_HostPaddingBottom, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
     global g_TabSlotMax, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarAlignment, g_TabBarOffsetY, g_TabPosition
@@ -84,8 +85,9 @@ LoadConfigFromIni() {
     global g_ActiveThemeFile
     try {
         g_TargetExe := IniRead(iniPath, "General", "TargetExe", g_TargetExe)
-        g_RefreshInterval := Integer(IniRead(iniPath, "General", "RefreshInterval", g_RefreshInterval))
-        g_CaptureDelayMs := Integer(IniRead(iniPath, "General", "CaptureDelayMs", g_CaptureDelayMs))
+        g_SlowSweepInterval := Integer(IniRead(iniPath, "General", "SlowSweepInterval", g_SlowSweepInterval))
+        g_StackDelayMs := Integer(IniRead(iniPath, "General", "StackDelayMs", g_StackDelayMs))
+        g_WatchdogMaxMs := Integer(IniRead(iniPath, "General", "WatchdogMaxMs", g_WatchdogMaxMs))
         g_TabDisappearGraceMs := Integer(IniRead(iniPath, "General", "TabDisappearGraceMs", g_TabDisappearGraceMs))
         g_DebugDiscovery := (IniRead(iniPath, "General", "DebugDiscovery", "0") = "1")
         g_HostTitle := IniRead(iniPath, "Layout", "HostTitle", g_HostTitle)
@@ -356,6 +358,7 @@ ApplyThemeToHost(host) {
 g_MainHost := ""             ; HostInstance for main window
 g_PopoutHosts := []          ; array of HostInstance for popped-out windows
 g_PendingCandidates := Map() ; tabId -> {firstSeen, candidate} (main host only)
+g_WatchdogTimerActive := false
 g_IsCleaningUp := false
 
 LoadConfigFromIni()
@@ -374,9 +377,13 @@ BuildTrayMenu()
 if g_UseCustomTitleBar
     OnMessage(0x83, OnWmNcCalcSize)
 BuildHostInstance(false)  ; create main host
+; Shell Hook for event-driven window discovery
+DllCall("RegisterShellHookWindow", "Ptr", g_MainHost.hwnd)
+g_ShellHookMsg := DllCall("RegisterWindowMessage", "Str", "SHELLHOOK", "UInt")
+OnMessage(g_ShellHookMsg, OnShellHook)
 OnExit(CleanupAll)
 RefreshWindows()
-SetTimer(RefreshWindows, g_RefreshInterval)
+SetTimer(RefreshWindows, g_SlowSweepInterval)
 SetTimer(CheckTabHoverAll, 50)
 
 ; Win+Shift+T toggles the host window.
@@ -679,8 +686,162 @@ HostGuiResized(host, guiObj, minMax, width, height) {
     ShowOnlyActiveTab(host)
 }
 
+IsReadyToStack(hwnd) {
+    if !hwnd || !DllCall("IsWindow", "ptr", hwnd)
+        return false
+    title := SafeWinGetTitle(hwnd)
+    if (title = "")
+        return false
+    hung := DllCall("User32.dll\IsHungAppWindow", "Ptr", hwnd, "Int")
+    return !hung
+}
+
+TryStackOrPending(host, candidate) {
+    global g_MainHost, g_PendingCandidates, g_StackDelayMs, g_WatchdogMaxMs, g_ShowOnlyWhenTabs, g_WatchdogTimerActive
+    if !g_PendingCandidates.Has(candidate.id) {
+        ; First time seeing this candidate — record the timestamp
+        now := A_TickCount
+        g_PendingCandidates[candidate.id] := {firstSeen: now, candidate: candidate}
+        AppendDebugLog("New candidate (pending watchdog)`r`n" candidate.hierarchySummary "`r`n")
+    } else {
+        ; Already pending — refresh metadata only, preserve firstSeen so the delay is not reset
+        g_PendingCandidates[candidate.id].candidate := candidate
+    }
+    if !g_WatchdogTimerActive {
+        g_WatchdogTimerActive := true
+        SetTimer(WatchdogCheck, 20)
+    }
+}
+
+WatchdogCheck(*) {
+    global g_MainHost, g_PendingCandidates, g_StackDelayMs, g_WatchdogMaxMs, g_WatchdogTimerActive, g_ShowOnlyWhenTabs
+    if !g_MainHost || g_PendingCandidates.Count = 0 {
+        g_WatchdogTimerActive := false
+        SetTimer(WatchdogCheck, 0)
+        return
+    }
+    now := A_TickCount
+    toStack := []
+    toRemove := []
+    for tabId, pending in g_PendingCandidates {
+        elapsed := now - pending.firstSeen
+        if elapsed >= g_StackDelayMs && IsReadyToStack(pending.candidate.topHwnd) {
+            ; Title-stability check: stack only once the title has been unchanged for two consecutive ticks (~50ms)
+            currentTitle := SafeWinGetTitle(pending.candidate.topHwnd)
+            if pending.HasProp("lastSeenTitle") && (currentTitle = pending.lastSeenTitle)
+                toStack.Push({tabId: tabId, candidate: pending.candidate, firstSeen: pending.firstSeen})
+            else {
+                pending.lastSeenTitle := currentTitle
+            }
+        } else if elapsed >= g_WatchdogMaxMs {
+            toRemove.Push(tabId)
+        }
+    }
+    anyStacked := false
+    for item in toStack {
+        g_PendingCandidates.Delete(item.tabId)
+        ; Re-build candidate from scratch so we use fresh, stable metadata (not the snapshot from creation time)
+        freshCandidate := BuildCandidateFromTopWindow(item.candidate.topHwnd)
+        if !IsObject(freshCandidate)
+            continue
+        ; Skip if already embedded (could have been stacked by slow sweep between checks)
+        if g_MainHost.tabRecords.Has(freshCandidate.id)
+            continue
+        if CreateTrackedTab(g_MainHost, freshCandidate) {
+            g_MainHost.activeTabId := freshCandidate.id
+            anyStacked := true
+        }
+    }
+    ; Defer GUI updates once for all stacked windows — avoids re-entrancy when gui.Add
+    ; pumps messages mid-loop and HostGuiResized re-enters LayoutTabButtons.
+    if anyStacked
+        SetTimer(WatchdogPostStackUpdate, -1)
+    for tabId in toRemove
+        g_PendingCandidates.Delete(tabId)
+    if g_PendingCandidates.Count = 0 {
+        g_WatchdogTimerActive := false
+        SetTimer(WatchdogCheck, 0)
+    }
+}
+
+WatchdogPostStackUpdate(*) {
+    global g_MainHost, g_ShowOnlyWhenTabs
+    if !g_MainHost
+        return
+    if g_ShowOnlyWhenTabs && g_MainHost.tabOrder.Length >= 1
+        g_MainHost.gui.Show("NoActivate")
+    LayoutTabButtons(g_MainHost)
+    ShowOnlyActiveTab(g_MainHost)
+    UpdateHostTitle(g_MainHost)
+    RedrawHostWindow(g_MainHost)
+}
+
+; Shell Hook: wParam 1=HSHELL_WINDOWCREATED, 2=HSHELL_WINDOWDESTROYED; lParam=HWND
+OnShellHook(wParam, lParam, msg, hwnd) {
+    if (wParam = 1)
+        OnWindowCreated(lParam)
+    else if (wParam = 2)
+        OnWindowDestroyed(lParam)
+}
+
+OnWindowCreated(hwnd) {
+    global g_MainHost, g_PendingCandidates, g_IsCleaningUp
+    if !g_MainHost || g_IsCleaningUp
+        return
+    candidate := BuildCandidateFromTopWindow(hwnd)
+    if !IsObject(candidate)
+        return
+    ; Skip if already embedded or pending
+    for host in GetAllHosts() {
+        if host.tabRecords.Has(candidate.id)
+            return
+    }
+    if g_PendingCandidates.Has(candidate.id)
+        return
+    ; Skip if content/top already embedded
+    for host in GetAllHosts() {
+        for tabId, record in host.tabRecords {
+            if (record.contentHwnd = candidate.contentHwnd || record.topHwnd = candidate.topHwnd)
+                return
+        }
+    }
+    TryStackOrPending(g_MainHost, candidate)
+}
+
+OnWindowDestroyed(hwnd) {
+    global g_MainHost, g_PendingCandidates, g_ShowOnlyWhenTabs
+    ; Remove from pending if this hwnd was a candidate
+    stalePending := []
+    for tabId, pending in g_PendingCandidates {
+        if (pending.candidate.topHwnd = hwnd)
+            stalePending.Push(tabId)
+    }
+    for tabId in stalePending
+        g_PendingCandidates.Delete(tabId)
+    ; Find and remove any tab that had this window
+    for host in GetAllHosts() {
+        for tabId, record in host.tabRecords {
+            if (record.topHwnd = hwnd || record.contentHwnd = hwnd) {
+                ; Window still alive = reparented/hidden by StackTabs, not closed by user.
+                ; The slow sweep handles truly destroyed windows via stale cleanup.
+                if DllCall("IsWindow", "ptr", hwnd)
+                    return
+                RemoveTrackedTab(host, tabId, false)
+                ; Update layout and visibility
+                LayoutTabButtons(host)
+                ShowOnlyActiveTab(host)
+                UpdateHostTitle(host)
+                RedrawHostWindow(host)
+                if g_MainHost && host = g_MainHost && g_ShowOnlyWhenTabs && host.tabOrder.Length = 0
+                    g_MainHost.gui.Hide()
+                return
+            }
+        }
+    }
+}
+
 RefreshWindows(*) {
-    global g_MainHost, g_IsCleaningUp, g_PendingCandidates, g_CaptureDelayMs, g_TabDisappearGraceMs, g_ShowOnlyWhenTabs
+    global g_MainHost, g_IsCleaningUp, g_PendingCandidates, g_TabDisappearGraceMs, g_ShowOnlyWhenTabs
 
     if !g_MainHost || g_IsCleaningUp
         return
@@ -722,25 +883,14 @@ RefreshWindows(*) {
                 }
 
                 if !g_PendingCandidates.Has(candidate.id) {
-                    g_PendingCandidates[candidate.id] := {firstSeen: now, candidate: candidate}
-                    AppendDebugLog("New candidate`r`n" candidate.hierarchySummary "`r`n")
+                    TryStackOrPending(host, candidate)
+                    if host.tabRecords.Has(candidate.id)
+                        structureChanged := true
                     continue
                 }
 
-                pending := g_PendingCandidates[candidate.id]
-                pending.candidate := candidate
-                if (now - pending.firstSeen) >= g_CaptureDelayMs {
-                    if CreateTrackedTab(host, candidate) {
-                        host.activeTabId := candidate.id
-                        ; Show host first when adding first tab (ShowOnlyWhenTabs): embedded child
-                        ; won't display properly if parent is hidden during layout
-                        if host = g_MainHost && g_ShowOnlyWhenTabs && host.tabOrder.Length = 1
-                            g_MainHost.gui.Show("NoActivate")
-                        ShowOnlyActiveTab(host)
-                        structureChanged := true
-                    }
-                    g_PendingCandidates.Delete(candidate.id)
-                }
+                ; Already pending: refresh candidate metadata only, do NOT reset firstSeen
+                g_PendingCandidates[candidate.id].candidate := candidate
             }
 
             stalePending := []
@@ -1757,12 +1907,14 @@ GetEmbedRect(host, &x, &y, &w, &h) {
 }
 
 CleanupAll(*) {
-    global g_MainHost, g_PopoutHosts, g_IsCleaningUp, g_PendingCandidates, g_SessionPath
+    global g_MainHost, g_PopoutHosts, g_IsCleaningUp, g_PendingCandidates, g_SessionPath, g_WatchdogTimerActive
 
     if g_IsCleaningUp
         return
 
     g_IsCleaningUp := true
+    g_WatchdogTimerActive := false
+    SetTimer(WatchdogCheck, 0)
 
     ; Save main window position/size to session.ini (only if window still exists)
     if IsObject(g_MainHost) && g_MainHost.hwnd && WinExist("ahk_id " g_MainHost.hwnd) {

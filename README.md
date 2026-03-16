@@ -40,7 +40,7 @@ Turn cluttered windows into one clean tabbed window. AutoHotkey v2 script that c
 
 Edit `config.ini` (copy from `config.ini.example` if needed). The file is read on startup. Sections:
 
-- **[General]** — Window matching (Match1, Match2, …) and timing (RefreshInterval, CaptureDelayMs, …)
+- **[General]** — Window matching (Match1, Match2, …) and timing (SlowSweepInterval, WatchdogMaxMs, …)
 - **[Layout]** — Window size, tab bar, behavior (ShowOnlyWhenTabs, UseCustomTitleBar)
 - **[Theme]** — Theme file (e.g. `ThemeFile=everforest.ini`)
 - **[TitleFilters]** — Regex patterns to shorten tab titles (Strip1, Strip2, …)
@@ -50,11 +50,12 @@ Edit `config.ini` (copy from `config.ini.example` if needed). The file is read o
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `Match1` / `Match2` / … | *(required)* | Window title substrings to match (case-insensitive). At least one must be configured; use `Match1=PowerShell`, `Match2=Notepad`, etc. in `config.ini`. Legacy: `WindowTitleMatch` as fallback when no MatchN is set. |
-| `g_TargetExe` | `""` | Optional process filter, e.g. `"powershell.exe"` |
-| `g_RefreshInterval` | `200` | How often to rescan for windows (ms) |
-| `g_CaptureDelayMs` | `900` | How long a matching window must exist before it is embedded |
-| `g_TabDisappearGraceMs` | `300` | Grace period before removing a tab whose window disappeared |
-| `g_DebugDiscovery` | `false` | When `1`, log new candidates to `discovery.txt` and enable Win+Shift+D to dump discovery scan. |
+| `TargetExe` | `""` | Optional process filter, e.g. `"powershell.exe"` |
+| `SlowSweepInterval` | `3000` | Fallback scan interval (ms). Shell Hook provides event-driven discovery; this catches edge cases. |
+| `StackDelayMs` | `250` | Minimum wait before stacking (avoids ghost/weird effects when windows are detected very quickly). |
+| `WatchdogMaxMs` | `1500` | Max wait for hung windows before giving up. |
+| `TabDisappearGraceMs` | `300` | Grace period before removing a tab whose window disappeared |
+| `DebugDiscovery` | `0` | When `1`, log new candidates to `discovery.txt` and enable Win+Shift+D to dump discovery scan. |
 
 **Title filters:** In `[TitleFilters]`, add `Strip1`, `Strip2`, etc. Each is a regex pattern removed from window titles before display. Example: `Strip1=^App - \s*` strips a leading "App - " prefix.
 
@@ -87,8 +88,8 @@ Themes are `.ini` files in the `themes\` folder. Switch themes from the tray men
 
 StackTabs uses standard Win32 window APIs to reparent matching windows into a custom host:
 
-1. **Discovery:** Enumerates top-level windows, filters by title and optional process, scores child windows to find the best content surface
-2. **Pending delay:** New windows must exist for `g_CaptureDelayMs` before embedding (avoids capturing transient shells)
+1. **Discovery:** Shell Hook (`RegisterShellHookWindow`) provides event-driven detection of new and destroyed windows. A slow sweep (every `SlowSweepInterval` ms) catches edge cases.
+2. **Watchdog:** Windows wait at least `StackDelayMs` before stacking (avoids ghost effects). Responsive windows (per `IsHungAppWindow`) stack once the delay has passed; hung windows are retried every 50ms up to `WatchdogMaxMs`, then skipped.
 3. **Embedding:** Saves original parent/owner/styles, reparents via `SetParent`, adjusts styles for child behavior
 4. **Rebind:** If the app recreates a window (new HWND), the script matches it back by stable ID and rebinds
 

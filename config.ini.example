@@ -15,8 +15,10 @@ Match1=PowerShell
 TargetExe=
 
 ; --- Timing (all in milliseconds) ---
-RefreshInterval=200      ; How often to scan for new windows
-CaptureDelayMs=900      ; Delay before capturing a new window (avoids grabbing too quickly)
+; Shell Hook provides event-driven discovery; Slow Sweep is a fallback scan.
+SlowSweepInterval=3000  ; Fallback scan interval (ms). Catches edge cases the Shell Hook might miss.
+StackDelayMs=100        ; Minimum wait before stacking. Title must also be stable for one extra tick (~20ms).
+WatchdogMaxMs=1500      ; Max wait for hung windows before giving up.
 TabDisappearGraceMs=300 ; Grace period before removing a tab whose window closed
 
 ; DebugDiscovery=0      ; Set to 1 to log window discovery; use Win+Shift+D to dump
