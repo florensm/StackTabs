@@ -4,6 +4,7 @@ session.ini
 
 # Debug / generated files
 discovery.txt
+winevents.txt
 debug-*.log
 
 # Local testing (keep for work, don't push)

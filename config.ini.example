@@ -18,6 +18,7 @@ TargetExe=
 ; Shell Hook provides event-driven discovery; Slow Sweep is a fallback scan.
 SlowSweepInterval=3000  ; Fallback scan interval (ms). Catches edge cases the Shell Hook might miss.
 StackDelayMs=100        ; Minimum wait before stacking. Title must also be stable for one extra tick (~20ms).
+StackSwitchDelayMs=150  ; Delay before switching to newly stacked tab; lets content load to reduce glitch.
 WatchdogMaxMs=1500      ; Max wait for hung windows before giving up.
 TabDisappearGraceMs=300 ; Grace period before removing a tab whose window closed
 
@@ -50,8 +51,6 @@ ActiveTabStyle=full     ; full = active tab has different bg; indicator = only s
 
 ; --- Behavior ---
 ShowOnlyWhenTabs=1       ; 1 = hide to tray when no tabs, show when 1+ (default). 0 = always show
-BringToFrontOnNewTab=0   ; 1 = bring host window to front when a new window is stacked (even if behind other windows). 0 = no focus steal
-AlwaysOnTop=0           ; 1 = host window stays on top of other windows. 0 = normal z-order
 UseCustomTitleBar=0      ; 1 = custom title bar (matches theme). 0 = system title bar
 TitleBarHeight=28
 
