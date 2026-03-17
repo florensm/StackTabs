@@ -78,6 +78,8 @@ LoadConfigFromIni() {
     if !FileExist(g_ConfigPath)
         return
     iniPath := g_ConfigPath
+    ; Read theme first so it's applied even if the try block below throws (e.g. invalid Layout values)
+    g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", "dark.ini"))
     global g_WindowTitleMatches, g_TargetExe, g_SlowSweepInterval, g_StackDelayMs, g_StackSwitchDelayMs, g_WatchdogMaxMs, g_TabDisappearGraceMs, g_DebugDiscovery
     global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight, g_HostX, g_HostY
     global g_HostPadding, g_HostPaddingBottom, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
@@ -122,7 +124,6 @@ LoadConfigFromIni() {
         g_ShowOnlyWhenTabs := (Trim(StrSplit(rawVal, ";")[1]) = "1")
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", "28"))
-        g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", "dark.ini"))
     }
     if FileExist(g_SessionPath) {
         g_HostX := Integer(IniRead(g_SessionPath, "Session", "WindowX", "-1"))
