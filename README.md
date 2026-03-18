@@ -42,7 +42,7 @@ Edit `config.ini` (copy from `config.ini.example` if needed). The file is read o
 
 - **[General]** — Window matching (Match1, Match2, …) and timing (SlowSweepInterval, WatchdogMaxMs, …)
 - **[Layout]** — Window size, tab bar, behavior (ShowOnlyWhenTabs, UseCustomTitleBar)
-- **[Theme]** — Theme file (e.g. `ThemeFile=everforest.ini`)
+- **[Theme]** — Theme file (e.g. `ThemeFile=dark.ini`)
 - **[TitleFilters]** — Regex patterns to shorten tab titles (Strip1, Strip2, …)
 
 ### General
@@ -68,7 +68,7 @@ Edit `config.ini` (copy from `config.ini.example` if needed). The file is read o
 | `g_HeaderHeight` | `44` | Tab bar height |
 | `g_TabHeight` | `30` | Tab button height |
 | `g_TabSlotMax` | `50` | Maximum number of tabs shown (extra tabs are hidden) |
-| `g_TabTitleMaxLen` | `60` | Max characters in tab label (truncated with ellipsis) |
+| `g_TabTitleMaxLen` | *(omit)* | Optional. Omit for fully dynamic (fits tab width, works for 1 or 2 lines). Set to cap titles shorter. |
 | `g_TabPosition` | `"top"` | Tab bar position: `top` or `bottom` |
 | `g_ShowOnlyWhenTabs` | `true` | When `1`, show host only when 1+ tabs; hide to tray when 0 (default). Set to `0` to always show host |
 | `g_UseCustomTitleBar` | `false` | Use borderless custom title bar (set to `1` in INI to enable) |
@@ -78,7 +78,7 @@ Edit `config.ini` (copy from `config.ini.example` if needed). The file is read o
 
 Themes are `.ini` files in the `themes\` folder. Switch themes from the tray menu: right-click the StackTabs icon, **Theme**, choose a theme. The selection is saved to `config.ini` under `[Theme]` / `ThemeFile=`.
 
-**Built-in themes** include `dark`, `light`, `high-contrast`, `everforest`, `rose-pine`, `one-dark`, `tokyo-night`, `dracula`, `catppuccin-mocha`, `spacious`, `compact`, and more.
+**Built-in themes** include `dark`, `light`, `spacious`, `compact`, `spacious-dark`, `bottom-tabs`, `high-contrast`, `minimal`, and `numbered`.
 
 **Custom themes:** Add your own `.ini` files to `themes\` or `themes\custom\`. Both folders are auto-discovered. Use **Open themes folder** from the tray menu to open the themes directory.
 

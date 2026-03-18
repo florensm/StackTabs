@@ -1,65 +1,74 @@
 ; ============================================
-; StackTabs Configuration
+; StackTabs Configuration Example
 ; ============================================
-; Edit this file and save. Restart StackTabs to apply changes.
-; Copy to config.ini if you prefer to start fresh.
+; Copy this file to config.ini and edit as needed.
+; Restart StackTabs after saving changes.
 
 [General]
 ; --- Window matching ---
-; Match1/Match2/... = title patterns. A window must contain at least one to be captured.
+; Match1/Match2/... = window title patterns. A window must contain at least one to be captured.
 Match1=PowerShell
 ; Match2=Notepad
 ; Match3=Visual Studio Code
 
-; Optional: limit to a specific process (e.g. pwsh.exe). Leave empty to match any.
+; Optional: limit to a specific process name (e.g. pwsh.exe). Leave empty to match any.
 TargetExe=
 
 ; --- Timing (all in milliseconds) ---
-; Shell Hook provides event-driven discovery; Slow Sweep is a fallback scan.
-SlowSweepInterval=3000  ; Fallback scan interval (ms). Catches edge cases the Shell Hook might miss.
-StackDelayMs=100        ; Minimum wait before stacking. Title must also be stable for one extra tick (~20ms).
-StackSwitchDelayMs=150  ; Delay before switching to newly stacked tab; lets content load to reduce glitch.
-WatchdogMaxMs=1500      ; Max wait for hung windows before giving up.
-TabDisappearGraceMs=300 ; Grace period before removing a tab whose window closed
+SlowSweepInterval=3000      ; Fallback scan interval. Catches windows the Shell Hook might miss.
+StackDelayMs=100            ; Minimum wait before stacking (title must also be stable).
+StackSwitchDelayMs=150      ; Delay before switching to a newly stacked tab.
+WatchdogMaxMs=1500          ; Max wait for hung windows before giving up.
+TabDisappearGraceMs=300     ; Grace period before removing a tab whose window closed.
 
-; DebugDiscovery=0      ; Set to 1 to log window discovery; use Win+Shift+D to dump
+; DebugDiscovery=0          ; Set to 1 to log window discovery events (Win+Shift+D to dump).
 
 [Layout]
-; --- Window ---
+; --- Host window ---
 HostTitle=StackTabs
 HostWidth=1200
 HostHeight=800
 HostMinWidth=700
 HostMinHeight=500
-HostPadding=8
-; HostPaddingBottom=-1   ; -1 = use HostPadding; >=0 = bottom padding only (reduces space below embedded window)
+HostPadding=8               ; Padding around the tab bar (left/right/top).
 
 ; --- Tab bar ---
-HeaderHeight=36
-TabHeight=30
-TabBarAlignment=center   ; top, center, or bottom — tabs aligned within the bar
-TabGap=6
+HeaderHeight=36             ; Height of the tab bar in pixels.
+TabHeight=30                ; Height of each tab button.
+TabBarAlignment=center      ; Vertical alignment of tabs within the bar: top, center, bottom.
+TabGap=6                    ; Gap between tabs in pixels.
 MinTabWidth=120
 MaxTabWidth=240
-TabSlotMax=50
-TabTitleMaxLen=60
+
+; --- Tab titles ---
+; TabTitleMaxLen=60         ; Optional. Omit for fully dynamic (fits tab width). Set to cap titles shorter.
+TabMaxLines=1               ; 1 = single line with ellipsis; 2+ = word-wrap across multiple lines.
+TabTitleAlignH=center       ; Horizontal text alignment: left, center, right.
+TabTitleAlignV=center       ; Vertical text alignment: top, center. Ignored when TabMaxLines>=2 (always top).
+ShowTabNumbers=0            ; 1 = prefix titles with position: "1. Title", "2. Title", etc.
+
+; --- Tab buttons ---
 CloseButtonWidth=22
 PopoutButtonWidth=22
-TabPosition=top         ; top or bottom
-TabIndicatorHeight=3    ; Active tab indicator strip (px). 0 to disable. Color from theme (TabIndicatorColor).
-ActiveTabStyle=full     ; full = active tab has different bg; indicator = only strip, same bg as inactive
+
+; --- Tab style ---
+TabPosition=top             ; Position of the tab bar: top or bottom.
+TabIndicatorHeight=3        ; Height of the active-tab indicator strip (px). 0 to disable.
+ActiveTabStyle=full         ; full = active tab has a distinct background; indicator = accent strip only.
 
 ; --- Behavior ---
-ShowOnlyWhenTabs=1       ; 1 = hide to tray when no tabs, show when 1+ (default). 0 = always show
-UseCustomTitleBar=0      ; 1 = custom title bar (matches theme). 0 = system title bar
-TitleBarHeight=28
+ShowOnlyWhenTabs=1          ; 1 = hide to tray when no tabs; show when 1+ tabs (default). 0 = always show.
+UseCustomTitleBar=0         ; 1 = custom title bar that matches the theme. 0 = system title bar.
+TitleBarHeight=28           ; Height of the custom title bar (only relevant when UseCustomTitleBar=1).
 
 [Theme]
-; Theme file from the themes\ folder (e.g. dark.ini, everforest.ini)
+; Theme file from the themes\ folder.
+; Available themes: dark.ini, light.ini, spacious.ini, compact.ini, spacious-dark.ini,
+;   bottom-tabs.ini, high-contrast.ini, minimal.ini, numbered.ini
 ThemeFile=dark.ini
 
 [TitleFilters]
 ; Strip1/Strip2/... = regex patterns removed from window titles before display.
-; Applied in order; result is trimmed. Useful to shorten long titles.
+; Applied in order; result is trimmed. Useful to shorten long window titles.
 ; Strip1=^MyApp - \s*
 ; Strip2=\s*- Microsoft Edge$
