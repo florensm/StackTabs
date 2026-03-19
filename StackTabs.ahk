@@ -1,4 +1,4 @@
-﻿; StackTabs - owner-aware embedded window host
+; StackTabs - owner-aware embedded window host
 ; AutoHotkey v2
 
 #Requires AutoHotkey v2.0
@@ -468,7 +468,7 @@ RefreshWindows()
 SetTimer(RefreshWindows, g_SlowSweepInterval)
 
 ; ============ TAB SWITCHER OVERLAY ============
-; Ctrl+Shift+A: floating overlay with tab cards and fuzzy search.
+; Alt+Shift+F: floating overlay with tab cards and fuzzy search (when StackTabs is focused).
 ; Type to filter. Arrow keys navigate. Enter switches. Escape closes.
 
 g_SwitcherGui       := ""
@@ -477,16 +477,19 @@ g_SwitcherVisible   := []
 g_SwitcherSelVisIdx := 0
 g_SwitcherCards     := []
 
-^+a:: {
+; Tab switcher: Alt+Shift+F when StackTabs host is active
+#HotIf StackTabsHostIsActive()
+!+f:: {
     global g_SwitcherGui
     if g_SwitcherGui {
         SwitcherClose()
         return
     }
-    ; Defer by 80ms so Ctrl+Shift are physically released before the GUI opens.
-    ; Without this the Edit control receives Ctrl held = command mode, not typing mode.
+    ; Defer by 80ms so modifiers are physically released before the GUI opens.
+    ; Without this the Edit control receives held modifiers = command mode, not typing mode.
     SetTimer(ShowTabSwitcher, -80)
 }
+#HotIf
 
 ShowTabSwitcher() {
     global g_SwitcherGui, g_SwitcherAllTabs, g_SwitcherVisible, g_SwitcherSelVisIdx, g_SwitcherCards

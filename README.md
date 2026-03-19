@@ -27,12 +27,12 @@ If no match patterns are configured, the script will prompt you and open the con
 |--------|--------|
 | `Win+Shift+T` | Show/hide the collector window |
 | `Win+Shift+D` | Dump discovery scan to `discovery.txt` *(only when `DebugDiscovery=1`)* |
-| `Ctrl+Shift+A` | Open **Tab Switcher** overlay (fuzzy search across all tabs) |
 
 ### When StackTabs host is focused
 
 | Hotkey | Action |
 |--------|--------|
+| `Alt+Shift+F` | Open **Tab Switcher** overlay (fuzzy search across all tabs) |
 | `Ctrl+Tab` | Next tab |
 | `Ctrl+Shift+Tab` | Previous tab |
 | `Ctrl+1` … `Ctrl+9` | Jump directly to tab 1–9 by position |
@@ -40,7 +40,7 @@ If no match patterns are configured, the script will prompt you and open the con
 | `Ctrl+Shift+O` | Pop out active tab into a separate window |
 | `Ctrl+Shift+M` | Merge popped-out tab back into main stack *(when pop-out window is focused)* |
 
-### Tab Switcher overlay (Ctrl+Shift+A)
+### Tab Switcher overlay (Alt+Shift+F)
 
 | Key | Action |
 |-----|--------|
@@ -197,7 +197,7 @@ ThemeFile=dark.ini
 - **Lightweight tabs** — Click to switch between captured windows
 - **Pop-out** — Extract a tab into its own window for side-by-side use
 - **Merge back** — Combine a popped-out tab back into the main stack
-- **Tab Switcher** — `Ctrl+Shift+A` for fuzzy search across all tabs
+- **Tab Switcher** — `Alt+Shift+F` (when focused) for fuzzy search across all tabs
 - **Taskbar icon** — Uses the active tab's app icon with a badge to distinguish StackTabs
 
 ---
