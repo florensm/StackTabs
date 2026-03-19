@@ -3,11 +3,20 @@
 
 #Requires AutoHotkey v2.0
 
+; SetWindowPos / ShowWindow flags (Win32 API)
+SWP_NOACTIVATE   := 0x0010
+SWP_NOZORDER     := 0x0004
+SWP_FRAMECHANGED := 0x0020
+SWP_SHOWWINDOW   := 0x0040
+SW_HIDE          := 0
+SW_SHOWNOACTIVATE := 4
+SW_SHOW          := 5
+SW_SHOWNA        := 8
+
 ; ============ CONFIGURATION ============
 ; Paths (relative to script directory)
 g_ConfigPath     := A_ScriptDir "\config.ini"
 g_ConfigExample  := A_ScriptDir "\config.ini.example"
-g_SessionPath    := A_ScriptDir "\session.ini"
 g_ThemesDir      := A_ScriptDir "\themes"
 g_DebugLogPath   := A_ScriptDir "\discovery.txt"
 g_DebugDiscovery := false  ; when true, AppendDebugLog writes to discovery.txt on new candidates
@@ -20,7 +29,7 @@ g_TargetExe := ""
 
 ; Shell Hook + Slow Sweep: event-driven discovery; fallback scan interval.
 g_SlowSweepInterval := 3000
-g_StackDelayMs := 100       ; Minimum wait before stacking; title-stability check provides additional protection
+g_StackDelayMs := 30        ; Minimum wait before stacking; title-stability check provides additional protection
 g_StackSwitchDelayMs := 150  ; Delay before switching to newly stacked tab; lets content load to reduce glitch
 g_WatchdogMaxMs := 1500
 g_TabDisappearGraceMs := 300
@@ -29,8 +38,6 @@ g_TabDisappearGraceMs := 300
 g_HostTitle := "StackTabs"
 g_HostWidth := 1200
 g_HostHeight := 800
-g_HostX := -1   ; -1 = no saved position, let Windows decide
-g_HostY := -1
 g_HostMinWidth := 700
 g_HostMinHeight := 500
 g_HostPadding := 8
@@ -47,6 +54,7 @@ g_TabBarAlignment := "center"  ; top, center, or bottom â€” tabs aligned wi
 g_TabBarOffsetY := -1         ; legacy: -1 = use alignment; >=0 = use as pixel offset (overrides alignment)
 g_TabPosition   := "top"    ; "top" or "bottom"
 g_TabIndicatorHeight := 3  ; height in px of the active-tab indicator strip; 0 to disable
+g_TabCornerRadius := 5
 g_ActiveTabStyle := "full"  ; "full" = active tab has different bg; "indicator" = only indicator strip, same bg as inactive
 g_ShowOnlyWhenTabs := true  ; when true, show host only when 1+ tabs; hide to tray when 0 (default). Set to 0 to always show host.
 
@@ -76,7 +84,7 @@ g_TabTitleAlignV      := "center"
 ; When true, tab titles are prefixed with their 1-based position: "1. Title", "2. Title", etc.
 g_ShowTabNumbers      := false
 
-; Loads config.ini and session.ini into globals; migrates from StackTabs.ini if needed.
+; Loads config.ini into globals; migrates from StackTabs.ini if needed.
 LoadConfigFromIni() {
     ; Migrate from StackTabs.ini if config.ini doesn't exist
     if !FileExist(g_ConfigPath) && FileExist(A_ScriptDir "\StackTabs.ini")
@@ -87,7 +95,7 @@ LoadConfigFromIni() {
     ; Read theme first so it's applied even if the try block below throws (e.g. invalid Layout values)
     g_ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", "dark.ini"))
     global g_WindowTitleMatches, g_TargetExe, g_SlowSweepInterval, g_StackDelayMs, g_StackSwitchDelayMs, g_WatchdogMaxMs, g_TabDisappearGraceMs, g_DebugDiscovery
-    global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight, g_HostX, g_HostY
+    global g_HostTitle, g_HostWidth, g_HostHeight, g_HostMinWidth, g_HostMinHeight
     global g_HostPadding, g_HostPaddingBottom, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
     global g_TabSlotMax, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarAlignment, g_TabBarOffsetY, g_TabPosition
     global g_ShowOnlyWhenTabs, g_TabIndicatorHeight, g_ActiveTabStyle
@@ -127,6 +135,7 @@ LoadConfigFromIni() {
         g_ShowTabNumbers := (Trim(StrSplit(IniRead(iniPath, "Layout", "ShowTabNumbers", "0"), ";")[1]) = "1")
         g_TabPosition := IniRead(iniPath, "Layout", "TabPosition", "top")
         g_TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", "3"))
+        g_TabCornerRadius := Integer(IniRead(iniPath, "Layout", "TabCornerRadius", "5"))
         g_ActiveTabStyle := Trim(IniRead(iniPath, "Layout", "ActiveTabStyle", "full"))
         ; ShowOnlyWhenTabs: show host only when 1+ tabs; hide to tray when 0 (default). Fallback for old config keys.
         rawVal := IniRead(iniPath, "Layout", "ShowOnlyWhenTabs", IniRead(iniPath, "Layout", "KeepHostAlive", IniRead(iniPath, "Layout", "HideHostWhenEmpty", "1")))
@@ -134,12 +143,6 @@ LoadConfigFromIni() {
         g_ShowOnlyWhenTabs := (Trim(StrSplit(rawVal, ";")[1]) = "1")
         g_UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", "0") = "1")
         g_TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", "28"))
-    }
-    if FileExist(g_SessionPath) {
-        g_HostX := Integer(IniRead(g_SessionPath, "Session", "WindowX", "-1"))
-        g_HostY := Integer(IniRead(g_SessionPath, "Session", "WindowY", "-1"))
-        g_HostWidth  := Integer(IniRead(g_SessionPath, "Session", "WindowW", g_HostWidth))
-        g_HostHeight := Integer(IniRead(g_SessionPath, "Session", "WindowH", g_HostHeight))
     }
     ; Load match patterns from [General] Match1/Match2/...
     g_WindowTitleMatches := []
@@ -176,7 +179,7 @@ LoadThemeFromFile(themePath) {
     global g_ThemeContentBorder, g_ThemeWindowText, g_ThemeFontName, g_ThemeFontNameTab
     global g_ThemeFontSize, g_ThemeIconFont, g_ThemeIconFontSize
     global g_HostPadding, g_HostPaddingBottom, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
-    global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarAlignment, g_TabBarOffsetY, g_TabPosition, g_TabIndicatorHeight
+    global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarAlignment, g_TabBarOffsetY, g_TabPosition, g_TabIndicatorHeight, g_TabCornerRadius
     global g_ActiveTabStyle, g_TabMaxLines, g_TabTitleMaxLen, g_TabTitleAlignH, g_TabTitleAlignV, g_ShowTabNumbers
     ; Fall back to dark.ini if the requested theme file doesn't exist
     if !FileExist(themePath)
@@ -216,6 +219,7 @@ LoadThemeFromFile(themePath) {
     if rawOffset != ""
         g_TabBarOffsetY := Integer(rawOffset)
     g_TabIndicatorHeight := Integer(IniRead(themePath, "Layout", "TabIndicatorHeight", String(g_TabIndicatorHeight)))
+    g_TabCornerRadius := Integer(IniRead(themePath, "Layout", "TabCornerRadius", String(g_TabCornerRadius)))
     ; TabPosition: when theme doesn't specify, read from config (not g_TabPosition) so we don't carry over
     ; the previous theme's value when switching themes
     rawPos := IniRead(themePath, "Layout", "TabPosition", "")
@@ -367,7 +371,7 @@ ApplyThemeToHost(host) {
     global g_ThemeBackground, g_ThemeTabBarBg, g_ThemeContentBorder, g_ThemeTabIndicatorColor, g_ThemeTabActiveBg
     global g_ThemeIconColor, g_ThemeIconFontSize, g_ThemeIconFont, g_ThemeWindowText, g_ThemeFontName, g_ThemeFontSize
     global g_UseCustomTitleBar
-    if !host || !host.gui || !DllCall("IsWindow", "ptr", host.hwnd)
+    if !host || !host.gui || !IsWindowExists(host.hwnd)
         return
     host.gui.BackColor := g_ThemeBackground
     host.gui.SetFont("s" g_ThemeFontSize " c" g_ThemeWindowText, g_ThemeFontName)
@@ -390,29 +394,17 @@ ApplyThemeToHost(host) {
             }
         }
     }
-    for _, indic in host.tabSlotIndicators {
-        color := (g_ThemeTabIndicatorColor != "") ? g_ThemeTabIndicatorColor : g_ThemeTabActiveBg
-        indic.Opt("Background0x" color)
-    }
-    ; Update font of slot controls (popout/close) â€” they keep old font until we refresh
-    for _, popoutBtn in host.tabSlotPopoutButtons {
-        popoutBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
-        popoutBtn.Opt("c" g_ThemeIconColor)
-    }
-    for _, closeBtn in host.tabSlotCloseButtons {
-        closeBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
-        closeBtn.Opt("c" g_ThemeIconColor)
-    }
     LayoutTabButtons(host)
     ShowOnlyActiveTab(host)
-    UpdateTabButtonStyles(host)
+    DrawTabBar(host)
     UpdateHostTitle(host)
-    RedrawHostWindow(host)
+    RedrawAnyWindow(host.hwnd)
 }
 
 ; ============ STATE ============
 g_MainHost := ""             ; HostInstance for main window
 g_PopoutHosts := []          ; array of HostInstance for popped-out windows
+g_AllHostsCache := []
 g_PendingCandidates := Map() ; tabId -> {firstSeen, candidate} (main host only)
 g_WatchdogTimerActive := false
 g_IsCleaningUp := false
@@ -432,6 +424,8 @@ DetectIconFont()
 BuildTrayMenu()
 if g_UseCustomTitleBar
     OnMessage(0x83, OnWmNcCalcSize)
+DllCall("LoadLibrary", "Str", "gdiplus", "Ptr")
+g_GdipToken := GdiplusStartup()
 BuildHostInstance(false)  ; create main host
 ; Shell Hook for event-driven window discovery
 DllCall("RegisterShellHookWindow", "Ptr", g_MainHost.hwnd)
@@ -448,7 +442,7 @@ OnMessage(g_ShellHookMsg, OnShellHook)
 g_WinEventHookCallback := CallbackCreate(WinEventProc, , 7)
 g_WinEventHooks := []
 g_WinEventHooks.Push(DllCall("SetWinEventHook",
-    "UInt", 0x8002, "UInt", 0x8018,
+    "UInt", 0x8000, "UInt", 0x8018,
     "Ptr",  0,      "Ptr",  g_WinEventHookCallback,
     "UInt", 0,      "UInt", 0, "UInt", 0, "Ptr"))
 
@@ -456,7 +450,246 @@ OnExit(CleanupAll)
 
 RefreshWindows()
 SetTimer(RefreshWindows, g_SlowSweepInterval)
-SetTimer(CheckTabHoverAll, 50)
+
+; ============ TAB SWITCHER OVERLAY ============
+; Ctrl+Shift+A: floating overlay with tab cards and fuzzy search.
+; Type to filter. Arrow keys navigate. Enter switches. Escape closes.
+
+g_SwitcherGui       := ""
+g_SwitcherAllTabs   := []
+g_SwitcherVisible   := []
+g_SwitcherSelVisIdx := 0
+g_SwitcherCards     := []
+
+^+a:: {
+    global g_SwitcherGui
+    if g_SwitcherGui {
+        SwitcherClose()
+        return
+    }
+    ; Defer by 80ms so Ctrl+Shift are physically released before the GUI opens.
+    ; Without this the Edit control receives Ctrl held = command mode, not typing mode.
+    SetTimer(ShowTabSwitcher, -80)
+}
+
+ShowTabSwitcher() {
+    global g_SwitcherGui, g_SwitcherAllTabs, g_SwitcherVisible, g_SwitcherSelVisIdx, g_SwitcherCards
+    global g_ThemeTabBarBg, g_ThemeTabActiveBg, g_ThemeTabActiveText
+    global g_ThemeTabInactiveBg, g_ThemeTabInactiveText, g_ThemeWindowText
+    global g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeBackground
+
+    if g_SwitcherGui {
+        SwitcherClose()
+        return
+    }
+
+    allTabs := []
+    for host in GetAllHosts() {
+        for tabId in host.tabOrder {
+            if !host.tabRecords.Has(tabId)
+                continue
+            record := host.tabRecords[tabId]
+            if IsWindowExists(record.contentHwnd)
+                allTabs.Push({tabId: tabId, host: host,
+                    title: FilterTitle(record.title),
+                    isActive: (tabId = host.activeTabId)})
+        }
+    }
+    if allTabs.Length = 0
+        return
+
+    g_SwitcherAllTabs   := allTabs
+    g_SwitcherVisible   := []
+    g_SwitcherSelVisIdx := 1
+    Loop allTabs.Length
+        g_SwitcherVisible.Push(A_Index)
+    for idx, item in allTabs {
+        if item.isActive {
+            g_SwitcherSelVisIdx := idx
+            break
+        }
+    }
+
+    ; Layout
+    cardW   := 200
+    cardH   := 56
+    cardGap := 8
+    pad     := 16
+    searchH := 38
+    cols    := Min(4, allTabs.Length)
+    rows    := Ceil(allTabs.Length / cols)
+    oW := Max(420, pad * 2 + cols * cardW + (cols - 1) * cardGap)
+    oH := Min(A_ScreenHeight - 80,
+              pad * 2 + searchH + cardGap + rows * cardH + (rows - 1) * cardGap)
+    ox := (A_ScreenWidth  - oW) // 2
+    oy := (A_ScreenHeight - oH) // 2
+
+    g_SwitcherGui           := Gui("+AlwaysOnTop -Caption +ToolWindow", "TabSwitcher")
+    g_SwitcherGui.BackColor  := g_ThemeTabBarBg
+    g_SwitcherGui.MarginX    := 0
+    g_SwitcherGui.MarginY    := 0
+    g_SwitcherCards := []
+
+    ; Search box — cue-banner text via EM_SETCUEBANNER after show
+    g_SwitcherGui.SetFont("s" (g_ThemeFontSize + 1) " c" g_ThemeWindowText, g_ThemeFontName)
+    searchBox := g_SwitcherGui.Add("Edit",
+        "x" pad " y" pad " w" (oW - pad * 2) " h" searchH
+        " Background" g_ThemeTabBarBg " c" g_ThemeWindowText, "")
+    searchBox.SetFont("s" (g_ThemeFontSize + 1) " c" g_ThemeWindowText, g_ThemeFontName)
+
+    cardAreaY := pad + searchH + cardGap
+
+    Loop allTabs.Length {
+        i    := A_Index
+        col  := Mod(i - 1, cols)
+        row  := (i - 1) // cols
+        cx   := pad + col * (cardW + cardGap)
+        cy   := cardAreaY + row * (cardH + cardGap)
+        item := allTabs[i]
+        isSel := (i = g_SwitcherSelVisIdx)
+        bg := isSel ? g_ThemeTabActiveBg : g_ThemeTabInactiveBg
+        fg := isSel ? g_ThemeTabActiveText : g_ThemeTabInactiveText
+
+        card := g_SwitcherGui.Add("Text",
+            "x" cx " y" cy " w" cardW " h" cardH
+            " +0x200 Center Background" bg " c" fg,
+            ShortTitle(item.title, 28))
+        card.SetFont("s" g_ThemeFontSize " c" fg, g_ThemeFontNameTab)
+        card.tabSwitcherIdx := i
+        card.OnEvent("Click", SwitcherCardClick)
+        g_SwitcherCards.Push(card)
+    }
+
+    g_SwitcherGui.OnEvent("Close", (*) => SwitcherClose())
+    g_SwitcherGui.Show("x" ox " y" oy " w" oW " h" oH)
+    DllCall("dwmapi.dll\DwmSetWindowAttribute",
+        "ptr", g_SwitcherGui.Hwnd, "uint", 33, "uint*", 2, "uint", 4)
+
+    ; Cue banner "Search tabs..." inside the edit box
+    SendMessage(0x1501, 1, StrPtr("Search tabs..."),, "ahk_id " searchBox.Hwnd)
+
+    searchBox.OnEvent("Change", SwitcherOnSearch)
+    OnMessage(0x0100, SwitcherOnKeyDown, 1)
+    WinActivate("ahk_id " g_SwitcherGui.Hwnd)
+    searchBox.Focus()
+}
+
+SwitcherClose() {
+    global g_SwitcherGui, g_SwitcherAllTabs, g_SwitcherVisible, g_SwitcherCards
+    OnMessage(0x0100, SwitcherOnKeyDown, 0)
+    if g_SwitcherGui {
+        g_SwitcherGui.Destroy()
+        g_SwitcherGui := ""
+    }
+    g_SwitcherAllTabs := []
+    g_SwitcherVisible := []
+    g_SwitcherCards   := []
+}
+
+SwitcherOnSearch(ctrl, *) {
+    global g_SwitcherAllTabs, g_SwitcherVisible, g_SwitcherSelVisIdx
+    query := ctrl.Value
+    g_SwitcherVisible := []
+    for idx, item in g_SwitcherAllTabs {
+        if query = "" || InStr(item.title, query, false)
+            g_SwitcherVisible.Push(idx)
+    }
+    g_SwitcherSelVisIdx := g_SwitcherVisible.Length ? 1 : 0
+    SwitcherRefreshCards()
+}
+
+SwitcherRefreshCards() {
+    global g_SwitcherGui, g_SwitcherVisible, g_SwitcherSelVisIdx, g_SwitcherCards
+    global g_ThemeTabActiveBg, g_ThemeTabActiveText
+    global g_ThemeTabInactiveBg, g_ThemeTabInactiveText
+    global g_ThemeFontNameTab, g_ThemeFontSize
+    if !g_SwitcherGui
+        return
+
+    visSet := Map()
+    for _, tabIdx in g_SwitcherVisible
+        visSet[tabIdx] := true
+    selTabIdx := (g_SwitcherSelVisIdx >= 1 && g_SwitcherSelVisIdx <= g_SwitcherVisible.Length)
+        ? g_SwitcherVisible[g_SwitcherSelVisIdx] : 0
+
+    for idx, card in g_SwitcherCards {
+        isVis := visSet.Has(idx)
+        isSel := (idx = selTabIdx)
+        card.Visible := isVis
+        if isVis {
+            bg := isSel ? g_ThemeTabActiveBg : g_ThemeTabInactiveBg
+            fg := isSel ? g_ThemeTabActiveText : g_ThemeTabInactiveText
+            card.Opt("Background" bg " c" fg)
+            card.SetFont("s" g_ThemeFontSize " c" fg, g_ThemeFontNameTab)
+        }
+    }
+}
+
+SwitcherCardClick(ctrl, *) {
+    global g_SwitcherVisible
+    idx := ctrl.tabSwitcherIdx
+    for _, tabIdx in g_SwitcherVisible {
+        if tabIdx = idx {
+            SwitcherActivate(tabIdx)
+            return
+        }
+    }
+}
+
+SwitcherActivate(tabIdx) {
+    global g_SwitcherAllTabs
+    if tabIdx < 1 || tabIdx > g_SwitcherAllTabs.Length
+        return
+    item := g_SwitcherAllTabs[tabIdx]
+    SwitcherClose()
+    SelectTab(item.host, item.tabId)
+    if item.host.hwnd && IsWindowExists(item.host.hwnd)
+        WinActivate("ahk_id " item.host.hwnd)
+}
+
+SwitcherOnKeyDown(wParam, lParam, msg, hwnd) {
+    global g_SwitcherGui, g_SwitcherSelVisIdx, g_SwitcherVisible, g_SwitcherAllTabs
+    if !g_SwitcherGui
+        return
+    if hwnd != g_SwitcherGui.Hwnd {
+        parent := DllCall("GetParent", "ptr", hwnd, "ptr")
+        if parent != g_SwitcherGui.Hwnd
+            return
+    }
+    cols  := Min(4, g_SwitcherAllTabs.Length)
+    count := g_SwitcherVisible.Length
+    if wParam = 0x1B {
+        SwitcherClose()
+        return 0
+    }
+    if count = 0
+        return
+    if wParam = 0x0D {
+        if g_SwitcherSelVisIdx >= 1 && g_SwitcherSelVisIdx <= count
+            SwitcherActivate(g_SwitcherVisible[g_SwitcherSelVisIdx])
+        return 0
+    }
+    if wParam = 0x25 {
+        g_SwitcherSelVisIdx := Max(1, g_SwitcherSelVisIdx - 1)
+        SwitcherRefreshCards()
+        return 0
+    }
+    if wParam = 0x27 {
+        g_SwitcherSelVisIdx := Min(count, g_SwitcherSelVisIdx + 1)
+        SwitcherRefreshCards()
+        return 0
+    }
+    if wParam = 0x26 {
+        g_SwitcherSelVisIdx := Max(1, g_SwitcherSelVisIdx - cols)
+        SwitcherRefreshCards()
+        return 0
+    }
+    if wParam = 0x28 {
+        g_SwitcherSelVisIdx := Min(count, g_SwitcherSelVisIdx + cols)
+        SwitcherRefreshCards()
+        return 0
+    }
+}
 
 ; ============ HOTKEYS ============
 ; Win+Shift+T: toggle host visibility (hide when active, show when hidden).
@@ -466,7 +699,7 @@ SetTimer(CheckTabHoverAll, 50)
     if !g_MainHost
         return
 
-    if WinExist("ahk_id " g_MainHost.hwnd) && WinActive("ahk_id " g_MainHost.hwnd)
+    if IsWindowExists(g_MainHost.hwnd) && WinActive("ahk_id " g_MainHost.hwnd)
         g_MainHost.gui.Hide()
     else {
         ; When ShowOnlyWhenTabs: only show if we have tabs
@@ -535,6 +768,7 @@ TitleBarDragClick(host, *) {
 TitleBarCloseClick(host, *) {
     global g_PopoutHosts
     if host.isPopout {
+        InvalidateHostsCache()
         for tabId in host.tabOrder.Clone()
             RemoveTrackedTab(host, tabId, true)
         for i, h in g_PopoutHosts {
@@ -569,7 +803,7 @@ GetLiveTabCount(host) {
 ; Gives keyboard focus to embedded content (from another process). Uses AttachThreadInput so
 ; SetFocus works cross-process. Without this, Ctrl+P etc. in the embedded app require a click first.
 FocusEmbeddedContent(hostHwnd, contentHwnd) {
-    if !hostHwnd || !contentHwnd || !DllCall("IsWindow", "ptr", contentHwnd)
+    if !hostHwnd || !contentHwnd || !IsWindowExists(contentHwnd)
         return
     targetTid := DllCall("GetWindowThreadProcessId", "ptr", contentHwnd, "ptr", 0, "uint")
     ourTid := DllCall("GetCurrentThreadId", "uint")
@@ -593,7 +827,7 @@ CloseWindowReliably(topHwnd, contentHwnd := "") {
     DetectHiddenWindows(true)
     try {
         for hwnd in [topHwnd, contentHwnd] {
-            if !hwnd || !WinExist("ahk_id " hwnd)
+            if !hwnd || !IsWindowExists(hwnd)
                 continue
             ; SendMessage (synchronous) - more reliable cross-process than PostMessage for WPF
             try SendMessage(0x0112, 0xF060, 0,, "ahk_id " hwnd,,,, 2000)  ; WM_SYSCOMMAND SC_CLOSE
@@ -624,14 +858,22 @@ GetClientHeight(hwnd) {
     }
 }
 
+InvalidateHostsCache() {
+    global g_AllHostsCache
+    g_AllHostsCache := []
+}
+
 ; Returns array of main host plus all popout hosts.
 GetAllHosts() {
-    global g_MainHost, g_PopoutHosts
+    global g_MainHost, g_PopoutHosts, g_AllHostsCache
+    if g_AllHostsCache.Length
+        return g_AllHostsCache
     hosts := []
     if g_MainHost
         hosts.Push(g_MainHost)
     for h in g_PopoutHosts
         hosts.Push(h)
+    g_AllHostsCache := hosts
     return hosts
 }
 
@@ -690,13 +932,7 @@ BuildHostInstance(isPopout := false) {
     host.tabOrder := []
     host.activeTabId := ""
     host.tabHoveredId := ""
-    host.tabButtons := Map()
-    host.tabCloseButtons := Map()
-    host.tabSlotButtons := []
-    host.tabSlotCloseButtons := []
-    host.tabSlotPopoutButtons := []
-    host.tabSlotIndicators := []
-    host.tabIndicators := Map()
+    host.isResizing := false
 
     global g_ThemeBackground, g_ThemeWindowText, g_ThemeFontName, g_ThemeFontSize
     title := isPopout ? (g_HostTitle " (popped out)") : g_HostTitle
@@ -727,16 +963,16 @@ BuildHostInstance(isPopout := false) {
         host.titleCloseBtn.OnEvent("Click", TitleBarCloseClick.Bind(host))
     }
     host.tabBarBg := host.gui.Add("Text", "x0 y" tabBarY " w" g_HostWidth " h" tabBarH " Background" g_ThemeTabBarBg, "")
+    host.tabCanvas := host.gui.Add("Pic",
+        "x0 y" tabBarY " w" g_HostWidth " h" tabBarH " +0xE", "")
     host.contentBorderTop := host.gui.Add("Text", "Hidden x0 y0 w0 h1 Background" g_ThemeContentBorder, "")
     host.contentBorderBottom := host.gui.Add("Text", "Hidden x0 y0 w0 h1 Background" g_ThemeContentBorder, "")
     host.contentBorderLeft := host.gui.Add("Text", "Hidden x0 y0 w1 h0 Background" g_ThemeContentBorder, "")
     host.contentBorderRight := host.gui.Add("Text", "Hidden x0 y0 w1 h0 Background" g_ThemeContentBorder, "")
     host.hwnd := host.gui.Hwnd
     host.clientHwnd := host.hwnd
-    global g_HostX, g_HostY, g_ShowOnlyWhenTabs
+    global g_ShowOnlyWhenTabs
     showOpts := "w" g_HostWidth " h" g_HostHeight
-    if !isPopout && g_HostX >= 0 && g_HostY >= 0
-        showOpts := "x" g_HostX " y" g_HostY " " showOpts
     if isPopout
         showOpts .= " Hide"  ; Keep hidden until ArrangeHostsSideBySide positions it
     host.gui.Show(showOpts)
@@ -761,6 +997,7 @@ BuildHostInstance(isPopout := false) {
         g_PopoutHosts.Push(host)
     else
         g_MainHost := host
+    InvalidateHostsCache()
     return host
 }
 
@@ -777,6 +1014,7 @@ HostGuiClosed(host, *) {
                 break
             }
         }
+        InvalidateHostsCache()
         if host.HasProp("iconHandle") && host.iconHandle
             DllCall("DestroyIcon", "ptr", host.iconHandle)
         host.gui.Destroy()
@@ -786,43 +1024,26 @@ HostGuiClosed(host, *) {
     }
 }
 
-; On host resize: re-layout tabs, update content area, save session (main host only).
+; On host resize: re-layout tabs, update content area.
 HostGuiResized(host, guiObj, minMax, width, height) {
-    global g_MainHost, g_SessionPath, g_HostX, g_HostY, g_HostWidth, g_HostHeight
     if minMax = -1
         return
-    LayoutTabButtons(host, width, height)
-    ShowOnlyActiveTab(host)
-    ; Keep globals and session in sync with actual window position/size (main host only)
-    if host = g_MainHost && host.hwnd && WinExist("ahk_id " host.hwnd) {
-        try {
-            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " host.hwnd)
-            g_HostX := wx
-            g_HostY := wy
-            g_HostWidth := ww
-            g_HostHeight := wh
-            SetTimer(SaveSessionDeferred, -300)  ; Debounce: save 300ms after last resize
-        }
-    }
-}
-
-; Saves main host position/size to session.ini (debounced after resize).
-SaveSessionDeferred(*) {
-    global g_MainHost, g_SessionPath
-    if !IsObject(g_MainHost) || !g_MainHost.hwnd || !WinExist("ahk_id " g_MainHost.hwnd)
+    if host.HasProp("isResizing") && host.isResizing
         return
+    if width < 100 || height < 100
+        return
+    host.isResizing := true
     try {
-        WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " g_MainHost.hwnd)
-        IniWrite(wx, g_SessionPath, "Session", "WindowX")
-        IniWrite(wy, g_SessionPath, "Session", "WindowY")
-        IniWrite(ww, g_SessionPath, "Session", "WindowW")
-        IniWrite(wh, g_SessionPath, "Session", "WindowH")
+        LayoutTabButtons(host, width, height)
+        ShowOnlyActiveTab(host)
+    } finally {
+        host.isResizing := false
     }
 }
 
 ; Returns true if window has a non-empty title and is not hung.
 IsReadyToStack(hwnd) {
-    if !hwnd || !DllCall("IsWindow", "ptr", hwnd)
+    if !hwnd || !IsWindowExists(hwnd)
         return false
     title := SafeWinGetTitle(hwnd)
     if (title = "")
@@ -845,8 +1066,31 @@ TryStackOrPending(host, candidate) {
     }
     if !g_WatchdogTimerActive {
         g_WatchdogTimerActive := true
-        SetTimer(WatchdogCheck, 20)
+        SetTimer(WatchdogCheck, 10)
     }
+}
+
+; Processes a single pending candidate: builds fresh candidate, handles duplicate detection/dialog, creates tracked tab.
+; Returns the new tab id on success, or "" if skipped/failed.
+ProcessPendingCandidate(tabId, pending) {
+    global g_MainHost
+    ; Re-build candidate from scratch so we use fresh, stable metadata (not the snapshot from creation time)
+    freshCandidate := BuildCandidateFromTopWindow(pending.candidate.topHwnd)
+    if !IsObject(freshCandidate)
+        return ""
+    ; Skip if already embedded (could have been stacked by slow sweep between checks)
+    if g_MainHost.tabRecords.Has(freshCandidate.id)
+        return ""
+    ; Duplicate detection: same process + same title = offer to close the older one
+    existingTabId := FindTabWithSameTitle(g_MainHost, freshCandidate)
+    if existingTabId != "" {
+        result := DuplicateConfirmDialog(ShortTitle(freshCandidate.title, 50))
+        if (result = "Yes")
+            CloseTab(g_MainHost, existingTabId)
+    }
+    if CreateTrackedTab(g_MainHost, freshCandidate)
+        return freshCandidate.id
+    return ""
 }
 
 ; Timer callback: stacks candidates that passed delay + title-stability; removes stale pending.
@@ -879,22 +1123,8 @@ WatchdogCheck(*) {
     hadTabsBefore := g_MainHost.tabOrder.Length
     for item in toStack {
         g_PendingCandidates.Delete(item.tabId)
-        ; Re-build candidate from scratch so we use fresh, stable metadata (not the snapshot from creation time)
-        freshCandidate := BuildCandidateFromTopWindow(item.candidate.topHwnd)
-        if !IsObject(freshCandidate)
-            continue
-        ; Skip if already embedded (could have been stacked by slow sweep between checks)
-        if g_MainHost.tabRecords.Has(freshCandidate.id)
-            continue
-        ; Duplicate detection: same process + same title = offer to close the older one
-        existingTabId := FindTabWithSameTitle(g_MainHost, freshCandidate)
-        if existingTabId != "" {
-            result := DuplicateConfirmDialog(ShortTitle(freshCandidate.title, 50))
-            if (result = "Yes")
-                CloseTab(g_MainHost, existingTabId)
-        }
-        if CreateTrackedTab(g_MainHost, freshCandidate) {
-            lastStackedTabId := freshCandidate.id
+        if (newTabId := ProcessPendingCandidate(item.tabId, item)) {
+            lastStackedTabId := newTabId
             anyStacked := true
         }
     }
@@ -937,7 +1167,7 @@ WatchdogPostStackUpdate(*) {
     LayoutTabButtons(g_MainHost)
     ShowOnlyActiveTab(g_MainHost)
     UpdateHostTitle(g_MainHost)
-    RedrawHostWindow(g_MainHost)
+    RedrawAnyWindow(g_MainHost.hwnd)
 }
 
 ; Switches to newly stacked tab after delay; lets content load before showing to reduce glitch.
@@ -970,7 +1200,7 @@ OnShellHook(wParam, lParam, msg, hwnd) {
 ;   0x8018 EVENT_OBJECT_UNCLOAKED  — UWP/WinUI window uncloaks
 ; idObject=0 (OBJID_WINDOW) means the event is for the window object itself, not a child control.
 WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsEventTime) {
-    if (event != 0x8002 && event != 0x800C && event != 0x8018)
+    if (event != 0x8000 && event != 0x8002 && event != 0x800C && event != 0x8018)
         return
     if (idObject != 0 || !hwnd)
         return
@@ -1049,14 +1279,14 @@ OnWindowDestroyed(hwnd) {
             if (record.topHwnd = hwnd || record.contentHwnd = hwnd) {
                 ; Window still alive = reparented/hidden by StackTabs, not closed by user.
                 ; The slow sweep handles truly destroyed windows via stale cleanup.
-                if DllCall("IsWindow", "ptr", hwnd)
+                if IsWindowExists(hwnd)
                     return
                 RemoveTrackedTab(host, tabId, false)
                 ; Update layout and visibility
                 LayoutTabButtons(host)
                 ShowOnlyActiveTab(host)
                 UpdateHostTitle(host)
-                RedrawHostWindow(host)
+                RedrawAnyWindow(host.hwnd)
                 if g_MainHost && host = g_MainHost && g_ShowOnlyWhenTabs && host.tabOrder.Length = 0
                     g_MainHost.gui.Hide()
                 return
@@ -1077,7 +1307,7 @@ RefreshWindows(*) {
     ; Update all hosts: keep tabs alive, check for stale tabs
     for host in GetAllHosts() {
         ; Use IsWindow: WinExist returns 0 for hidden windows; host may be hidden when ShowOnlyWhenTabs
-        if !DllCall("IsWindow", "ptr", host.hwnd)
+        if !IsWindowExists(host.hwnd)
             continue
 
         structureChanged := false
@@ -1159,10 +1389,10 @@ RefreshWindows(*) {
 
         if structureChanged || titleChanged
             LayoutTabButtons(host)
-        ; RedrawHostWindow only for structural changes (tabs added/removed); for title-only changes
+        ; RedrawAnyWindow only for structural changes (tabs added/removed); for title-only changes
         ; SelectTab below handles the repaint via UpdateTabButtonStyles → WinRedraw.
         if structureChanged
-            RedrawHostWindow(host)
+            RedrawAnyWindow(host.hwnd)
         ; When a tab's title changed, switch to that tab
         if titleChanged && tabIdOfLastTitleChange != ""
             SelectTab(host, tabIdOfLastTitleChange)
@@ -1177,7 +1407,7 @@ RefreshWindows(*) {
     }
 
     ; When ShowOnlyWhenTabs: hide when 0 tabs, show when 1+ tabs (only if hidden).
-    if g_ShowOnlyWhenTabs && g_MainHost && DllCall("IsWindow", "ptr", g_MainHost.hwnd) {
+    if g_ShowOnlyWhenTabs && g_MainHost && IsWindowExists(g_MainHost.hwnd) {
         liveCount := 0
         for tabId in g_MainHost.tabOrder {
             if g_MainHost.tabRecords.Has(tabId) && IsWindowExists(g_MainHost.tabRecords[tabId].contentHwnd)
@@ -1233,7 +1463,7 @@ BuildCandidateFromTopWindow(topHwnd) {
     global g_WindowTitleMatches, g_TargetExe, g_DebugDiscovery
 
     try {
-        if !WinExist("ahk_id " topHwnd)
+        if !IsWindowExists(topHwnd)
             return ""
         title := WinGetTitle("ahk_id " topHwnd)
         if !DllCall("IsWindowVisible", "ptr", topHwnd)
@@ -1302,7 +1532,7 @@ FindStableContentWindow(topHwnd) {
 ScoreContentCandidate(topHwnd, hwnd) {
     global g_WindowTitleMatches
 
-    if !WinExist("ahk_id " hwnd)
+    if !IsWindowExists(hwnd)
         return -1
     if !DllCall("IsWindowVisible", "ptr", hwnd)
         return -1
@@ -1407,11 +1637,11 @@ DuplicateConfirmDialog(shortTitle) {
     dlgHwnd := dlg.Hwnd
 
     fnY(*) {
-        if dlgHwnd && WinExist("ahk_id " dlgHwnd) && WinActive("ahk_id " dlgHwnd)
+        if dlgHwnd && IsWindowExists(dlgHwnd) && WinActive("ahk_id " dlgHwnd)
             submitYes()
     }
     fnN(*) {
-        if dlgHwnd && WinExist("ahk_id " dlgHwnd) && WinActive("ahk_id " dlgHwnd)
+        if dlgHwnd && IsWindowExists(dlgHwnd) && WinActive("ahk_id " dlgHwnd)
             submitNo()
     }
 
@@ -1420,7 +1650,7 @@ DuplicateConfirmDialog(shortTitle) {
     Hotkey("n", fnN, "On")
     Hotkey("N", fnN, "On")
 
-    while WinExist("ahk_id " dlgHwnd)
+    while IsWindowExists(dlgHwnd)
         Sleep(50)
 
     cleanup()
@@ -1513,7 +1743,7 @@ UpdateTrackedTab(host, tabId, candidate) {
         return true
     }
 
-    if WinExist("ahk_id " record.contentHwnd) {
+    if IsWindowExists(record.contentHwnd) {
         currentParent := DllCall("GetParent", "ptr", record.contentHwnd, "ptr")
         if currentParent != host.clientHwnd {
             AttachTrackedWindow(host, tabId)
@@ -1555,11 +1785,13 @@ CloseTab(host, tabId) {
 ; Deferred layout after close; destroys empty popout host.
 CloseTabDeferredUpdate(host, *) {
     global g_PopoutHosts
+    if !host.hwnd || !IsWindowExists(host.hwnd)
+        return
     LayoutTabButtons(host)
     ShowOnlyActiveTab(host)
     UpdateHostTitle(host)
-    RedrawHostWindow(host)
-    if host.hwnd && WinExist("ahk_id " host.hwnd)
+    RedrawAnyWindow(host.hwnd)
+    if host.hwnd && IsWindowExists(host.hwnd) && host.tabOrder.Length > 0
         WinActivate("ahk_id " host.hwnd)
     ; Destroy empty popout
     if host.isPopout && host.tabOrder.Length = 0 {
@@ -1569,6 +1801,7 @@ CloseTabDeferredUpdate(host, *) {
                 break
             }
         }
+        InvalidateHostsCache()
         host.gui.Destroy()
     }
 }
@@ -1618,16 +1851,18 @@ AttachTrackedWindow(host, tabId) {
     record := host.tabRecords[tabId]
     hwnd := record.contentHwnd
 
-    if !WinExist("ahk_id " hwnd)
+    if !IsWindowExists(hwnd)
         return false
 
     ; Grab focus before hiding the original window so Windows doesn't redirect it elsewhere.
-    if host.hwnd && WinExist("ahk_id " host.hwnd)
+    if host.hwnd && IsWindowExists(host.hwnd)
         DllCall("SetForegroundWindow", "ptr", host.hwnd)
 
-    if (record.topHwnd != hwnd) && WinExist("ahk_id " record.topHwnd) {
+    SendMessage(0x000B, 0, 0,, "ahk_id " hwnd)  ; WM_SETREDRAW FALSE
+
+    if (record.topHwnd != hwnd) && IsWindowExists(record.topHwnd) {
         record.sourceWasHidden := true
-        DllCall("ShowWindow", "ptr", record.topHwnd, "int", 0)
+        DllCall("ShowWindow", "ptr", record.topHwnd, "int", SW_HIDE)
     }
 
     newStyle := record.originalContentStyle
@@ -1654,9 +1889,10 @@ AttachTrackedWindow(host, tabId) {
     areaY += 1
     areaW -= 2
     areaH -= 2
-    flags := 0x0020 | 0x0040 | 0x0004 | 0x0010
+    flags := SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE
     DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", areaX, "int", areaY, "int", areaW, "int", areaH, "uint", flags)
-    DllCall("ShowWindow", "ptr", hwnd, "int", 0)  ; hide until explicitly shown by ShowOnlyActiveTab
+    SendMessage(0x000B, 1, 0,, "ahk_id " hwnd)  ; WM_SETREDRAW TRUE
+    DllCall("ShowWindow", "ptr", hwnd, "int", SW_HIDE)
     return true
 }
 
@@ -1669,20 +1905,20 @@ DetachTrackedWindow(host, tabId, restoreWindow := true, restoreSource := true) {
     hwnd := record.contentHwnd
 
     ; When closing, claim host focus before any ShowWindow so focus stays in StackTabs.
-    if !restoreWindow && host.hwnd && WinExist("ahk_id " host.hwnd)
+    if !restoreWindow && host.hwnd && IsWindowExists(host.hwnd)
         DllCall("SetForegroundWindow", "ptr", host.hwnd)
 
     ; Show parent FIRST (critical for WinUI/XAML apps like PowerShell/Windows Terminal)
     ; so the composition tree can reattach before we reparent the content.
     ; Skip when closing: topHwnd is about to close anyway and showing it steals focus.
-    if restoreSource && restoreWindow && record.sourceWasHidden && (record.topHwnd != hwnd) && DllCall("IsWindow", "ptr", record.topHwnd) {
-        DllCall("ShowWindow", "ptr", record.topHwnd, "int", record.sourceWasVisible ? 5 : 0)
+    if restoreSource && restoreWindow && record.sourceWasHidden && (record.topHwnd != hwnd) && IsWindowExists(record.topHwnd) {
+        DllCall("ShowWindow", "ptr", record.topHwnd, "int", record.sourceWasVisible ? SW_SHOWNOACTIVATE : SW_HIDE)
     }
 
-    if WinExist("ahk_id " hwnd) {
+    if IsWindowExists(hwnd) {
         ; Validate parent: if destroyed, fall back to desktop (top-level window)
         parentHwnd := record.originalContentParent
-        if !parentHwnd || !DllCall("IsWindow", "ptr", parentHwnd)
+        if !parentHwnd || !IsWindowExists(parentHwnd)
             parentHwnd := 0
 
         ; Parent valid: use parent-relative coords. Parent 0 (fallback): use screen coords.
@@ -1702,12 +1938,12 @@ DetachTrackedWindow(host, tabId, restoreWindow := true, restoreSource := true) {
         SetWindowLongPtrValue(hwnd, -16, record.originalContentStyle)
         SetWindowLongPtrValue(hwnd, -20, record.originalContentExStyle)
 
-        flags := 0x0020 | 0x0040
+        flags := SWP_FRAMECHANGED | SWP_SHOWWINDOW
         DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0
             , "int", posX, "int", posY
             , "int", record.originalContentW, "int", record.originalContentH
             , "uint", flags)
-        DllCall("ShowWindow", "ptr", hwnd, "int", restoreWindow ? 5 : 0)
+        DllCall("ShowWindow", "ptr", hwnd, "int", restoreWindow ? SW_SHOW : SW_HIDE)
     }
     record.sourceWasHidden := false
 }
@@ -1720,31 +1956,38 @@ TransferTrackedWindow(sourceHost, destHost, tabId) {
     record := destHost.tabRecords[tabId]
     hwnd := record.contentHwnd
 
-    if !WinExist("ahk_id " hwnd)
+    if !IsWindowExists(hwnd)
         return false
 
     ; Direct reparent: source host's client -> dest host's client
     ; Window stays as WS_CHILD the whole time - no restore to original
     DllCall("SetParent", "ptr", hwnd, "ptr", destHost.clientHwnd, "ptr")
 
-    flags := 0x0020 | 0x0040 | 0x0004 | 0x0010
+    flags := SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE
     DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", 0, "int", 0, "int", 100, "int", 100, "uint", flags)
-    DllCall("ShowWindow", "ptr", hwnd, "int", 4)
-    RedrawEmbeddedWindow(hwnd)
+    DllCall("ShowWindow", "ptr", hwnd, "int", SW_SHOWNOACTIVATE)
+    RedrawAnyWindow(hwnd)
     return true
 }
 
 ; Positions and sizes tab buttons, popout/close controls, and indicators.
 LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
     global g_HostWidth, g_HostHeight, g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
-    global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabSlotMax, g_HeaderHeight, g_TabBarAlignment, g_TabBarOffsetY
-    global g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition, g_TabIndicatorHeight, g_TabMaxLines, g_TabTitleMaxLen, g_ThemeTabInactiveBg, g_TabTitleAlignH, g_TabTitleAlignV, g_ShowTabNumbers
+    global g_CloseButtonWidth, g_PopoutButtonWidth, g_HeaderHeight, g_TabBarAlignment, g_TabBarOffsetY
+    global g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
 
     if !host || !host.gui
         return
-    if !host.hwnd || !WinExist("ahk_id " host.hwnd)
+    if !host.hwnd || !IsWindowExists(host.hwnd)
         return
 
+    host.isLayingOut := true
+    if host.hwnd && IsWindowExists(host.hwnd) {
+        prev := DetectHiddenWindows(true)
+        try SendMessage(0x000B, 0, 0,, "ahk_id " host.hwnd)
+        DetectHiddenWindows(prev)
+    }
+    try {
     if !windowWidth {
         windowWidth := GetClientWidth(host.hwnd)
         if !windowWidth
@@ -1773,18 +2016,9 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
         host.tabBarBg.Move(0, tabBarY, windowWidth, g_HeaderHeight)
 
     tabCount := host.tabOrder.Length
-    extraBtnWidth := g_CloseButtonWidth + g_PopoutButtonWidth  ; popout + close per tab
 
     if !tabCount {
-        for _, ctrl in host.tabSlotButtons
-            ctrl.Visible := false
-        for _, ctrl in host.tabSlotCloseButtons
-            ctrl.Visible := false
-        for _, ctrl in host.tabSlotPopoutButtons
-            ctrl.Visible := false
-        host.tabButtons := Map()
-        host.tabCloseButtons := Map()
-        host.tabPopoutButtons := Map()
+        DrawTabBar(host)
         return
     }
 
@@ -1802,181 +2036,16 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
         else
             tabOffsetY := (g_HeaderHeight - g_TabHeight) // 2  ; center (default)
     }
-    tabBtnY := tabBarY + tabOffsetY
-    needed := Min(tabCount, g_TabSlotMax)
-    ; Use same creation for both: no fixed height (let Move set it), so TabMaxLines=1 and 2 render identically
-    btnH := ""
-    ; Alignment bits are set via ApplyTabButtonAlignment (called from UpdateTabButtonStyles) after every Opt() call.
-    ; Setting them here is useless: btn.Opt("+Wrap") in the layout loop strips them. Only SS_NOPREFIX (0x100) needed.
-    btnStyle := " +0x100"
-    while host.tabSlotButtons.Length < needed {
-        btn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w100" btnH btnStyle " Background0x" g_ThemeTabInactiveBg, "")
-        btn.SetFont("s" g_ThemeFontSize, g_ThemeFontNameTab)
-        btn.OnEvent("Click", SelectSlot)
-        host.tabSlotButtons.Push(btn)
-        popoutBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_PopoutButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", "")
-        popoutBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
-        popoutBtn.Opt("c" g_ThemeIconColor)
-        popoutBtn.OnEvent("Click", PopOutSlot)
-        host.tabSlotPopoutButtons.Push(popoutBtn)
-        closeBtn := host.gui.Add("Text", "Hidden x0 y" tabBtnY " w" g_CloseButtonWidth " h" g_TabHeight " +0x200 +0x100 Center", g_IconClose)
-        closeBtn.SetFont("s" g_ThemeIconFontSize, g_ThemeIconFont)
-        closeBtn.Opt("c" g_ThemeIconColor)
-        closeBtn.OnEvent("Click", CloseSlot)
-        host.tabSlotCloseButtons.Push(closeBtn)
-        if g_TabIndicatorHeight > 0 {
-            global g_ThemeTabIndicatorColor, g_ThemeTabActiveBg
-            color := (g_ThemeTabIndicatorColor != "") ? g_ThemeTabIndicatorColor : g_ThemeTabActiveBg
-            indic := host.gui.Add("Text", "Hidden x0 y0 w100 h" g_TabIndicatorHeight " Background" color, "")
-            host.tabSlotIndicators.Push(indic)
-        }
+    DrawTabBar(host)
+    } finally {
+    if host.hwnd && IsWindowExists(host.hwnd) {
+        prev := DetectHiddenWindows(true)
+        try SendMessage(0x000B, 1, 0,, "ahk_id " host.hwnd)
+        DetectHiddenWindows(prev)
+        DllCall("RedrawWindow", "Ptr", host.hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0085)
     }
-    ; Create indicators when switching from TabIndicatorHeight=0 to >0 (slots exist but no indicators)
-    while host.tabSlotIndicators.Length < needed && g_TabIndicatorHeight > 0 {
-        global g_ThemeTabIndicatorColor, g_ThemeTabActiveBg
-        color := (g_ThemeTabIndicatorColor != "") ? g_ThemeTabIndicatorColor : g_ThemeTabActiveBg
-        indic := host.gui.Add("Text", "Hidden x0 y0 w100 h" g_TabIndicatorHeight " Background" color, "")
-        host.tabSlotIndicators.Push(indic)
+        host.isLayingOut := false
     }
-
-    usableWidth := Max(200, windowWidth - (g_HostPadding * 2))
-    tabWidth := Floor((usableWidth - ((tabCount - 1) * g_TabGap)) / tabCount)
-    tabWidth := Max(g_MinTabWidth, Min(g_MaxTabWidth, tabWidth))
-    titleWidth := tabWidth - extraBtnWidth
-
-    host.tabButtons := Map()
-    host.tabCloseButtons := Map()
-    host.tabPopoutButtons := Map()
-    host.tabIndicators := Map()
-    global g_ThemeFontNameTab, g_ThemeFontSize
-    x := g_HostPadding
-    for i, tabId in host.tabOrder {
-        if i > g_TabSlotMax
-            break
-        btn := host.tabSlotButtons[i]
-        popoutBtn := host.tabSlotPopoutButtons[i]
-        closeBtn := host.tabSlotCloseButtons[i]
-        rawTitle := host.tabRecords.Has(tabId) ? FilterTitle(host.tabRecords[tabId].title) : "Window"
-        prefix := g_ShowTabNumbers ? i ". " : ""
-        fullTitle := prefix . rawTitle
-        effectiveMaxLen := GetEffectiveMaxLenForWidth(titleWidth, g_ThemeFontNameTab, g_ThemeFontSize, true, fullTitle, g_TabTitleMaxLen, g_TabMaxLines)
-        title := FormatTabTitle(fullTitle, effectiveMaxLen, g_TabMaxLines)
-        ; Always use +Wrap: -Wrap when TabMaxLines=1 causes white box artifact on some themes
-        btn.Opt("+Wrap")
-        btn.Move(x, tabBtnY, titleWidth, g_TabHeight)  ; move first so width is correct before setting text (for wrap)
-        btn.Text := title
-        btn.tabSlotHost := host
-        btn.tabSlotId   := tabId
-        btn.Visible := true
-        host.tabButtons[tabId] := btn
-
-        popoutBtn.Move(x + titleWidth, tabBtnY, g_PopoutButtonWidth, g_TabHeight)
-        popoutBtn.tabSlotHost    := host
-        popoutBtn.tabSlotId      := tabId
-        popoutBtn.tabSlotIsMerge := host.isPopout
-        if host.isPopout
-            popoutBtn.Text := g_IconMerge
-        else
-            popoutBtn.Text := g_IconPopout
-        popoutBtn.Visible := true
-        host.tabPopoutButtons[tabId] := popoutBtn
-
-        closeBtn.Move(x + titleWidth + g_PopoutButtonWidth, tabBtnY, g_CloseButtonWidth, g_TabHeight)
-        closeBtn.tabSlotHost := host
-        closeBtn.tabSlotId   := tabId
-        closeBtn.Visible := true
-        host.tabCloseButtons[tabId] := closeBtn
-
-        if g_TabIndicatorHeight > 0 && host.tabSlotIndicators.Length >= i {
-            indicY := (g_TabPosition = "bottom") ? tabBtnY : (tabBtnY + g_TabHeight - g_TabIndicatorHeight)
-            ; Indicator only under title area to avoid z-order issues with popout/close icons
-            host.tabSlotIndicators[i].Move(x, indicY, titleWidth, g_TabIndicatorHeight)
-            host.tabIndicators[tabId] := host.tabSlotIndicators[i]
-        }
-
-        x += tabWidth + g_TabGap
-    }
-
-    Loop Max(0, host.tabSlotButtons.Length - tabCount) {
-        i := tabCount + A_Index
-        host.tabSlotButtons[i].Visible := false
-        host.tabSlotPopoutButtons[i].Visible := false
-        host.tabSlotCloseButtons[i].Visible := false
-        if host.tabSlotIndicators.Length >= i
-            host.tabSlotIndicators[i].Visible := false
-    }
-
-    UpdateTabButtonStyles(host)
-}
-
-; Tab click handler: selects the tab for this slot.
-SelectSlot(ctrl, *) {
-    if ctrl.HasProp("tabSlotHost") && ctrl.HasProp("tabSlotId")
-        SelectTab(ctrl.tabSlotHost, ctrl.tabSlotId)
-}
-
-; Close button handler: closes the tab for this slot.
-CloseSlot(ctrl, *) {
-    if ctrl.HasProp("tabSlotHost") && ctrl.HasProp("tabSlotId")
-        CloseTab(ctrl.tabSlotHost, ctrl.tabSlotId)
-}
-
-; Popout/merge button handler: popout to new window or merge back to main.
-PopOutSlot(ctrl, *) {
-    if ctrl.HasProp("tabSlotHost") && ctrl.HasProp("tabSlotId") && ctrl.HasProp("tabSlotIsMerge") {
-        if ctrl.tabSlotIsMerge
-            MergeBackTab(ctrl.tabSlotHost, ctrl.tabSlotId)
-        else
-            PopOutTab(ctrl.tabSlotHost, ctrl.tabSlotId)
-    }
-}
-
-
-; Timer: updates tab hover state for all hosts based on mouse position.
-CheckTabHoverAll() {
-    MouseGetPos(, , , &ctrlHwnd, 2)
-    for host in GetAllHosts() {
-        if !host.hwnd || !host.HasProp("tabButtons")
-            continue
-        newHovered := ""
-        ; Check tab button, popout button, and close button — each tab has 3 controls side by side.
-        ; Only checking the main tab button caused flicker when hovering over the icon area.
-        for tabId in host.tabOrder {
-            if (host.tabButtons.Has(tabId) && host.tabButtons[tabId].Hwnd = ctrlHwnd)
-                || (host.tabPopoutButtons.Has(tabId) && host.tabPopoutButtons[tabId].Hwnd = ctrlHwnd)
-                || (host.tabCloseButtons.Has(tabId) && host.tabCloseButtons[tabId].Hwnd = ctrlHwnd) {
-                newHovered := tabId
-                break
-            }
-        }
-        if newHovered != host.tabHoveredId {
-            prevHovered := host.tabHoveredId
-            host.tabHoveredId := newHovered
-            UpdateHoverStyles(host, prevHovered, newHovered)
-        }
-    }
-}
-
-; Updates background colors for the two hover-affected tab buttons only.
-; Avoids the O(tabs × GDI) cost of a full UpdateTabButtonStyles on every hover change.
-UpdateHoverStyles(host, prevHoveredId, newHoveredId) {
-    global g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover, g_ThemeTabInactiveText, g_ThemeIconColor
-    if !host || !host.HasProp("tabButtons")
-        return
-    for tabId in [prevHoveredId, newHoveredId] {
-        if tabId = "" || tabId = host.activeTabId
-            continue
-        if !host.tabButtons.Has(tabId)
-            continue
-        isHovered := (tabId = newHoveredId)
-        bg := isHovered ? g_ThemeTabInactiveBgHover : g_ThemeTabInactiveBg
-        host.tabButtons[tabId].Opt("Background0x" bg " c" g_ThemeTabInactiveText)
-        if host.tabCloseButtons.Has(tabId)
-            host.tabCloseButtons[tabId].Opt("Background0x" bg " c" g_ThemeIconColor)
-        if host.tabPopoutButtons.Has(tabId)
-            host.tabPopoutButtons[tabId].Opt("Background0x" bg " c" g_ThemeIconColor)
-    }
-    try WinRedraw("ahk_id " host.hwnd)
 }
 
 ; Sets active tab, shows its content, updates host title.
@@ -2029,6 +2098,7 @@ PopOutTab(sourceHost, tabId) {
         sourceHost.tabOrder.Push(tabId)
         sourceHost.activeTabId := tabId
         g_PopoutHosts.Pop()
+        InvalidateHostsCache()
         popoutHost.gui.Destroy()
         return
     }
@@ -2049,8 +2119,8 @@ PopOutTabDeferredLayout(sourceHost, popoutHost, *) {
     LayoutTabButtons(popoutHost)
     ShowOnlyActiveTab(popoutHost)
     UpdateHostTitle(popoutHost)
-    RedrawHostWindow(sourceHost)
-    RedrawHostWindow(popoutHost)
+    RedrawAnyWindow(sourceHost.hwnd)
+    RedrawAnyWindow(popoutHost.hwnd)
 }
 
 MergeBackTab(popoutHost, tabId) {
@@ -2100,19 +2170,19 @@ MergeBackTab(popoutHost, tabId) {
             break
         }
     }
+    InvalidateHostsCache()
     popoutHost.gui.Destroy()
 
     LayoutTabButtons(g_MainHost)
     ShowOnlyActiveTab(g_MainHost)
     UpdateHostTitle(g_MainHost)
-    RedrawHostWindow(g_MainHost)
+    RedrawAnyWindow(g_MainHost.hwnd)
 }
 
 ; Positions host2 (popout) on the opposite half of the monitor from host1.
 ArrangeHostsSideBySide(host1, host2) {
     try {
         WinGetPos(&x1, &y1, &w1, &h1, "ahk_id " host1.hwnd)
-        gap := 8
 
         ; Work area of the monitor containing host1
         cx := x1 + w1 // 2
@@ -2128,7 +2198,6 @@ ArrangeHostsSideBySide(host1, host2) {
 
         ; Place popout in the opposite half when main host is tiled (avoids off-screen or cramped placement)
         workW := workR - workL
-        workH := workB - workT
         hostCenter := x1 + w1 // 2
         workCenter := workL + workW // 2
 
@@ -2153,6 +2222,8 @@ ArrangeHostsSideBySide(host1, host2) {
 ; Shows active tab content, hides others; positions content area and border.
 ShowOnlyActiveTab(host) {
     global g_ThemeContentBorder
+    DllCall("LockWindowUpdate", "Ptr", host.hwnd)
+    try {
     if (host.activeTabId != "") && !host.tabRecords.Has(host.activeTabId)
         host.activeTabId := ""
     if (host.activeTabId = "") && host.tabOrder.Length
@@ -2174,7 +2245,7 @@ ShowOnlyActiveTab(host) {
     }
 
     if host.activeTabId = "" {
-        UpdateTabButtonStyles(host)
+        DrawTabBar(host)
         return
     }
 
@@ -2196,11 +2267,11 @@ ShowOnlyActiveTab(host) {
         if !IsWindowExists(record.contentHwnd)
             continue
         ; Position without SWP_NOCOPYBITS — avoids erasing pixels before the window repaints.
-        flags := 0x0020 | 0x0004 | 0x0010
+        flags := SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE
         DllCall("SetWindowPos", "ptr", record.contentHwnd, "ptr", 0
             , "int", areaX, "int", areaY, "int", areaW, "int", areaH
             , "uint", flags)
-        DllCall("ShowWindow", "ptr", record.contentHwnd, "int", 4)  ; SW_SHOWNA
+        DllCall("ShowWindow", "ptr", record.contentHwnd, "int", SW_SHOWNOACTIVATE)
         activeHwnd := record.contentHwnd
         break
     }
@@ -2212,92 +2283,141 @@ ShowOnlyActiveTab(host) {
             continue
         record := host.tabRecords[tabId]
         if IsWindowExists(record.contentHwnd)
-            DllCall("ShowWindow", "ptr", record.contentHwnd, "int", 0)
+            DllCall("ShowWindow", "ptr", record.contentHwnd, "int", SW_HIDE)
     }
-    ; Defer redraw to avoid double-paint flicker (immediate + 50ms deferred would both trigger repaint).
+    ; Immediate redraw so embedded content paints (RDW_NOERASE in RedrawAnyWindow avoids flash).
+    if activeHwnd
+        RedrawAnyWindow(activeHwnd)
 
-    UpdateTabButtonStyles(host)
+    DrawTabBar(host)
     host.lastRefreshActiveTabId := host.activeTabId
-    ; Deferred repaint removed: scheduling a 50ms-later redraw caused visible flicker.
-    ; The embedded window paints when shown; WinRedraw in UpdateTabButtonStyles refreshes the host.
+    ; Single deferred redraw at 50ms for slow apps (e.g. WPF) that need time to settle.
+    ; Debounced: cancel previous so we don't stack redraws when switching tabs quickly.
+    if host.activeTabId != "" {
+        if host.HasProp("deferredRepaintFn") && host.deferredRepaintFn
+            SetTimer(host.deferredRepaintFn, 0)
+        host.deferredRepaintFn := DeferredRepaintCheck.Bind(host)
+        SetTimer(host.deferredRepaintFn, -50)
+    }
+    } finally {
+        DllCall("LockWindowUpdate", "Ptr", 0)
+    }
 }
 
-; Applies active/inactive/hover styles to tab buttons and indicators.
-UpdateTabButtonStyles(host) {
-    global g_ThemeTabActiveBg, g_ThemeTabActiveText, g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover
-    global g_ThemeTabInactiveText, g_ThemeIconColor, g_ThemeFontName, g_ThemeFontNameTab, g_ThemeFontSize
-    global g_ActiveTabStyle, g_TabIndicatorHeight, g_TabMaxLines, g_TabTitleMaxLen, g_ThemeTabBarBg, g_TabTitleAlignH, g_TabTitleAlignV, g_ShowTabNumbers
-    if !host || !IsObject(host) || !host.HasProp("tabButtons") || !host.tabButtons
+DrawTabBar(host) {
+    global g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabCornerRadius
+    global g_HeaderHeight, g_TabHeight, g_CloseButtonWidth, g_PopoutButtonWidth
+    global g_TabBarAlignment, g_TabBarOffsetY, g_TabIndicatorHeight
+    global g_TabPosition, g_UseCustomTitleBar, g_TitleBarHeight
+    global g_ThemeTabBarBg, g_ThemeTabActiveBg, g_ThemeTabActiveText
+    global g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover, g_ThemeTabInactiveText
+    global g_ThemeTabIndicatorColor, g_ThemeIconFont, g_ThemeIconFontSize
+    global g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeIconColor, g_ShowTabNumbers
+    global g_IconClose, g_IconPopout, g_IconMerge
+
+    if !host.HasProp("tabCanvas") || !host.tabCanvas
         return
-    if !host.hwnd || !DllCall("IsWindow", "ptr", host.hwnd)
+    if !host.hwnd || !IsWindowExists(host.hwnd)
         return
-    hoveredId := host.HasProp("tabHoveredId") ? host.tabHoveredId : ""
-    ; Get tab width from first button for dynamic maxLen
-    titleWidth := 0
-    for tabId, ctrl in host.tabButtons {
-        ctrl.GetPos(&_, &_, &w, &_)
-        titleWidth := w
-        break
+
+    w := GetClientWidth(host.hwnd)
+    h := GetClientHeight(host.hwnd)
+    if !w || !h
+        return
+
+    tabBarW := w
+    tabBarH := g_HeaderHeight
+    tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+    if g_TabPosition = "bottom"
+        tabBarY := h - g_HeaderHeight
+
+    host.tabCanvas.Move(0, tabBarY, tabBarW, tabBarH)
+
+    GdipCreateOffscreenBitmap(tabBarW, tabBarH, &pBitmap, &pGraphics)
+
+    ; Fill background
+    pBgBrush := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(g_ThemeTabBarBg),
+        "UPtr*", &pBgBrush)
+    DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pBgBrush,
+        "Int", 0, "Int", 0, "Int", tabBarW, "Int", tabBarH)
+    DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBgBrush)
+
+    tabCount := host.tabOrder.Length
+    if tabCount = 0 {
+        ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics)
+        return
     }
-    for tabId, ctrl in host.tabButtons {
-        tabIdx := 0
-        if g_ShowTabNumbers {
-            for i, tid in host.tabOrder {
-                if tid = tabId {
-                    tabIdx := i
-                    break
-                }
-            }
+
+    usableWidth := Max(200, tabBarW - (g_HostPadding * 2))
+    tabWidth := Floor((usableWidth - ((tabCount - 1) * g_TabGap)) / tabCount)
+    tabWidth := Max(g_MinTabWidth, Min(g_MaxTabWidth, tabWidth))
+    titleWidth := tabWidth - g_CloseButtonWidth - g_PopoutButtonWidth
+
+    if g_TabBarOffsetY >= 0
+        tabOffsetY := g_TabBarOffsetY
+    else {
+        align := StrLower(g_TabBarAlignment)
+        if align = "top"
+            tabOffsetY := 0
+        else if align = "bottom"
+            tabOffsetY := tabBarH - g_TabHeight
+        else
+            tabOffsetY := (tabBarH - g_TabHeight) // 2
+    }
+
+    x := g_HostPadding
+    for i, tabId in host.tabOrder {
+        isActive  := (tabId = host.activeTabId)
+        isHovered := (tabId = host.tabHoveredId)
+
+        bgColor := isActive  ? HexToARGB(g_ThemeTabActiveBg)
+                 : isHovered ? HexToARGB(g_ThemeTabInactiveBgHover)
+                 :             HexToARGB(g_ThemeTabInactiveBg)
+        fgColor := isActive  ? HexToARGB(g_ThemeTabActiveText)
+                 :             HexToARGB(g_ThemeTabInactiveText)
+        iconColor := isActive ? HexToARGB(g_ThemeTabActiveText)
+                   :            HexToARGB(g_ThemeIconColor)
+
+        ; Tab background with rounded corners (radius 5)
+        GdipFillRoundRect(pGraphics, x, tabOffsetY, tabWidth, g_TabHeight, g_TabCornerRadius, bgColor)
+
+        ; Active indicator strip
+        if isActive && g_TabIndicatorHeight > 0 {
+            indicColor := HexToARGB(g_ThemeTabIndicatorColor != ""
+                ? g_ThemeTabIndicatorColor : g_ThemeTabActiveBg)
+            indicY := (g_TabPosition = "bottom")
+                ? tabOffsetY
+                : tabOffsetY + g_TabHeight - g_TabIndicatorHeight
+            GdipFillRoundRect(pGraphics, x + 4, indicY,
+                titleWidth - 8, g_TabIndicatorHeight, 1, indicColor)
         }
-        rawTitle := host.tabRecords.Has(tabId) ? FilterTitle(host.tabRecords[tabId].title) : "Window"
-        prefix := (g_ShowTabNumbers && tabIdx > 0) ? tabIdx ". " : ""
-        fullTitle := prefix . rawTitle
-        effectiveMaxLen := GetEffectiveMaxLenForWidth(titleWidth, g_ThemeFontNameTab, g_ThemeFontSize, true, fullTitle, g_TabTitleMaxLen, g_TabMaxLines)
-        title := FormatTabTitle(fullTitle, effectiveMaxLen, g_TabMaxLines)
-        ; Always use +Wrap. Note: Opt("+Wrap") strips alignment bits — ApplyTabButtonAlignment is called last.
-        ctrl.Opt("+Wrap")
-        if tabId = host.activeTabId {
-            ctrl.Text := title
-            ctrl.SetFont("s" g_ThemeFontSize " Bold", g_ThemeFontNameTab)
-            if (g_ActiveTabStyle = "indicator") {
-                ; Indicator-only: same bg as inactive, accent via indicator strip.
-                ; Use TabInactiveText (not TabActiveText) for readability — TabActiveText is tuned for bright TabActiveBg
-                ctrl.Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeTabInactiveText)
-                if host.tabCloseButtons.Has(tabId)
-                    host.tabCloseButtons[tabId].Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeIconColor)
-                if host.tabPopoutButtons.Has(tabId)
-                    host.tabPopoutButtons[tabId].Opt("Background0x" g_ThemeTabInactiveBg " c" g_ThemeIconColor)
-            } else {
-                ; Full: active tab has distinct background
-                ctrl.Opt("Background0x" g_ThemeTabActiveBg " c" g_ThemeTabActiveText)
-                if host.tabCloseButtons.Has(tabId)
-                    host.tabCloseButtons[tabId].Opt("Background0x" g_ThemeTabActiveBg " c" g_ThemeTabActiveText)
-                if host.tabPopoutButtons.Has(tabId)
-                    host.tabPopoutButtons[tabId].Opt("Background0x" g_ThemeTabActiveBg " c" g_ThemeTabActiveText)
-            }
-            if host.tabIndicators.Has(tabId)
-                host.tabIndicators[tabId].Visible := (g_TabIndicatorHeight > 0)
-        } else {
-            inactiveBg := (tabId = hoveredId) ? g_ThemeTabInactiveBgHover : g_ThemeTabInactiveBg
-            ctrl.Text := title
-            ctrl.SetFont("s" g_ThemeFontSize " Norm", g_ThemeFontName)
-            ctrl.Opt("Background0x" inactiveBg " c" g_ThemeTabInactiveText)
-            if host.tabCloseButtons.Has(tabId)
-                host.tabCloseButtons[tabId].Opt("Background0x" inactiveBg " c" g_ThemeIconColor)
-            if host.tabPopoutButtons.Has(tabId)
-                host.tabPopoutButtons[tabId].Opt("Background0x" inactiveBg " c" g_ThemeIconColor)
-            if host.tabIndicators.Has(tabId)
-                host.tabIndicators[tabId].Visible := false
-        }
-        ; Apply alignment last: Opt() calls above strip alignment bits, so we set them via SetWindowLongPtr.
-        ApplyTabButtonAlignment(ctrl)
+
+        ; Tab title
+        rawTitle := host.tabRecords.Has(tabId)
+            ? FilterTitle(host.tabRecords[tabId].title) : "Window"
+        if g_ShowTabNumbers
+            rawTitle := i ". " rawTitle
+        GdipDrawStringSimple(pGraphics, rawTitle,
+            x, tabOffsetY, titleWidth, g_TabHeight,
+            fgColor, g_ThemeFontNameTab, g_ThemeFontSize, isActive)
+
+        ; Popout / merge icon
+        iconText := host.isPopout ? g_IconMerge : g_IconPopout
+        GdipDrawStringSimple(pGraphics, iconText,
+            x + titleWidth, tabOffsetY, g_PopoutButtonWidth, g_TabHeight,
+            iconColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
+
+        ; Close icon
+        GdipDrawStringSimple(pGraphics, g_IconClose,
+            x + titleWidth + g_PopoutButtonWidth, tabOffsetY,
+            g_CloseButtonWidth, g_TabHeight,
+            iconColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
+
+        x += tabWidth + g_TabGap
     }
-    ; Hide all indicators when TabIndicatorHeight=0 (e.g. after switching from a theme that had them)
-    if g_TabIndicatorHeight = 0 {
-        for _, indic in host.tabSlotIndicators
-            indic.Visible := false
-    }
-    try WinRedraw("ahk_id " host.hwnd)
+
+    ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics)
 }
 
 ; Updates host window title with tab count and active tab name.
@@ -2339,7 +2459,7 @@ GetEmbedRect(host, &x, &y, &w, &h) {
     else
         y := customTitleH + g_HeaderHeight + g_HostPadding
 
-    if host.hwnd && WinExist("ahk_id " host.hwnd) {
+    if host.hwnd && IsWindowExists(host.hwnd) {
         try {
             WinGetClientPos(,, &clientW, &clientH, "ahk_id " host.hwnd)
             w := Max(200, clientW - (g_HostPadding * 2))
@@ -2358,9 +2478,9 @@ GetEmbedRect(host, &x, &y, &w, &h) {
         h := Max(140, g_HostHeight - y - padBottom)
 }
 
-; Exit handler: restores all tabs, saves session, clears state.
+; Exit handler: restores all tabs, clears state.
 CleanupAll(*) {
-    global g_MainHost, g_PopoutHosts, g_IsCleaningUp, g_PendingCandidates, g_SessionPath, g_WatchdogTimerActive
+    global g_MainHost, g_PopoutHosts, g_IsCleaningUp, g_PendingCandidates, g_WatchdogTimerActive
     global g_WinEventHooks, g_WinEventHookCallback
 
     if g_IsCleaningUp
@@ -2374,17 +2494,6 @@ CleanupAll(*) {
         for hook in g_WinEventHooks
             DllCall("UnhookWinEvent", "Ptr", hook)
         g_WinEventHooks := []
-    }
-
-    ; Save main window position/size to session.ini (only if window still exists)
-    if IsObject(g_MainHost) && g_MainHost.hwnd && WinExist("ahk_id " g_MainHost.hwnd) {
-        try {
-            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " g_MainHost.hwnd)
-            IniWrite(wx, g_SessionPath, "Session", "WindowX")
-            IniWrite(wy, g_SessionPath, "Session", "WindowY")
-            IniWrite(ww, g_SessionPath, "Session", "WindowW")
-            IniWrite(wh, g_SessionPath, "Session", "WindowH")
-        }
     }
 
     for host in GetAllHosts() {
@@ -2447,7 +2556,7 @@ DescribeWindowHierarchy(topHwnd, contentHwnd) {
 
 ; Returns one-line debug description of a window (class, process, title, size, style).
 DescribeSingleWindow(hwnd) {
-    if !WinExist("ahk_id " hwnd)
+    if !IsWindowExists(hwnd)
         return hwnd " [missing]"
 
     title := SafeWinGetTitle(hwnd)
@@ -2497,26 +2606,28 @@ GetPreferredTabTitle(record) {
     return SafeWinGetTitle(record.contentHwnd)
 }
 
-; Forces embedded window to redraw (invalidates and updates).
-; RDW_NOERASE (0x1000) avoids WM_ERASEBKGND which can cause visible flicker.
-RedrawEmbeddedWindow(hwnd) {
-    if !WinExist("ahk_id " hwnd)
+; Forces window to redraw (invalidates and updates).
+RedrawAnyWindow(hwnd) {
+    if !hwnd || !IsWindowExists(hwnd)
         return
 
-    flags := 0x0001 | 0x0080 | 0x0100 | 0x0400 | 0x1000  ; INVALIDATE|UPDATENOW|ALLCHILDREN|FRAME|NOERASE
+    flags := 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400  ; INVALIDATE|ERASENOW|UPDATENOW|ALLCHILDREN|FRAME
     DllCall("RedrawWindow", "ptr", hwnd, "ptr", 0, "ptr", 0, "uint", flags)
     DllCall("UpdateWindow", "ptr", hwnd)
 }
 
-; Forces host window to redraw.
-; RDW_NOERASE (0x1000) avoids WM_ERASEBKGND which can cause visible flicker.
-RedrawHostWindow(host) {
-    if !host || !host.hwnd
+; Timer callback: redraws active tab content and host after layout change.
+DeferredRepaintCheck(host, *) {
+    if host.HasProp("deferredRepaintFn")
+        host.deferredRepaintFn := ""
+    if !host || !host.hwnd || !IsWindowExists(host.hwnd)
         return
-
-    flags := 0x0001 | 0x0080 | 0x0100 | 0x0400 | 0x1000  ; INVALIDATE|UPDATENOW|ALLCHILDREN|FRAME|NOERASE
-    DllCall("RedrawWindow", "ptr", host.hwnd, "ptr", 0, "ptr", 0, "uint", flags)
-    DllCall("UpdateWindow", "ptr", host.hwnd)
+    if host.activeTabId != "" && host.tabRecords.Has(host.activeTabId) {
+        record := host.tabRecords[host.activeTabId]
+        if IsWindowExists(record.contentHwnd)
+            RedrawAnyWindow(record.contentHwnd)
+    }
+    RedrawAnyWindow(host.hwnd)
 }
 
 ; ============ ICON ============
@@ -2682,136 +2793,6 @@ ShortTitle(title, maxLen := 28) {
     return SubStr(title, 1, maxLen - 1) . "..."
 }
 
-; Measures text width in pixels using the tab font. Returns -1 on error.
-MeasureTextWidth(text, fontName, fontSize, bold := false) {
-    if text = ""
-        return 0
-    hdc := DllCall("GetDC", "ptr", 0, "ptr")
-    if !hdc
-        return -1
-    ; lfHeight = -MulDiv(PointSize, GetDeviceCaps(LOGPIXELSY), 72). LOGPIXELSY = 90.
-    logPixelsY := DllCall("GetDeviceCaps", "ptr", hdc, "int", 90, "int")
-    lfHeight := -Round(fontSize * logPixelsY / 72)
-    lfWeight := bold ? 700 : 400
-    ; LOGFONTW: 60 bytes + 64 bytes for lfFaceName (32 WCHARs)
-    lf := Buffer(124, 0)
-    NumPut("int", lfHeight, lf, 0)
-    NumPut("int", 0, lf, 4)
-    NumPut("int", 0, lf, 8)
-    NumPut("int", 0, lf, 12)
-    NumPut("int", lfWeight, lf, 16)
-    NumPut("uchar", 0, lf, 20)   ; lfItalic
-    NumPut("uchar", 0, lf, 21)   ; lfUnderline
-    NumPut("uchar", 0, lf, 22)   ; lfStrikeOut
-    NumPut("uchar", 1, lf, 23)   ; lfCharSet = DEFAULT_CHARSET
-    NumPut("uchar", 0, lf, 24)   ; lfOutPrecision
-    NumPut("uchar", 0, lf, 25)   ; lfClipPrecision
-    NumPut("uchar", 0, lf, 26)   ; lfQuality
-    NumPut("uchar", 0, lf, 27)   ; lfPitchAndFamily
-    ; LOGFONTW: lfHeight..lfWeight (20 bytes), lfItalic..lfPitchAndFamily (8 bytes) = 28. lfFaceName at 28.
-    StrPut(fontName, lf.Ptr + 28, 32, "UTF-16")
-    hFont := DllCall("CreateFontIndirectW", "ptr", lf, "ptr")
-    if !hFont {
-        DllCall("ReleaseDC", "ptr", 0, "ptr", hdc)
-        return -1
-    }
-    hOld := DllCall("SelectObject", "ptr", hdc, "ptr", hFont, "ptr")
-    size := Buffer(8, 0)
-    len := StrLen(text)
-    ok := DllCall("GetTextExtentPoint32W", "ptr", hdc, "str", text, "int", len, "ptr", size, "int")
-    DllCall("SelectObject", "ptr", hdc, "ptr", hOld, "ptr")
-    DllCall("DeleteObject", "ptr", hFont, "ptr")
-    DllCall("ReleaseDC", "ptr", 0, "ptr", hdc)
-    if !ok
-        return -1
-    return NumGet(size, 0, "int")
-}
-
-; Returns effective maxLen for tab title: min(dynamic fit for titleWidth, configMaxLen).
-; When titleWidthPx <= 0, returns configMaxLen (no dynamic calculation).
-; configMaxLen can override to force shorter titles.
-GetEffectiveMaxLenForWidth(titleWidthPx, fontName, fontSize, bold, title, configMaxLen, maxLines) {
-    if titleWidthPx <= 0
-        return configMaxLen
-    if maxLines <= 1 {
-        ; Single line: find max n such that SubStr(title,1,n-1)+"..." fits (or full title if n > StrLen)
-        low := 1
-        high := StrLen(title) + 1
-        while low <= high {
-            mid := (low + high) // 2
-            if mid <= StrLen(title)
-                display := SubStr(title, 1, mid - 1) . "..."
-            else
-                display := title
-            w := MeasureTextWidth(display, fontName, fontSize, bold)
-            if w >= 0 && w <= titleWidthPx {
-                low := mid + 1
-            } else
-                high := mid - 1
-        }
-        dynamicMax := high
-    } else {
-        ; Multi-line: find max chars per line. Use "W" as worst-case width.
-        low := 1
-        high := 200
-        while low <= high {
-            mid := (low + high) // 2
-            sample := ""
-            Loop mid
-                sample .= "W"
-            w := MeasureTextWidth(sample, fontName, fontSize, bold)
-            if w >= 0 && w <= titleWidthPx {
-                low := mid + 1
-            } else
-                high := mid - 1
-        }
-        dynamicMax := high
-    }
-    return Min(Max(1, dynamicMax), configMaxLen)
-}
-
-; Formats title for tab display: maxLen per line, maxLines lines. When maxLines>1, overflow goes to next line.
-; Truncates with "..." only when total exceeds maxLen * maxLines.
-FormatTabTitle(title, maxLen, maxLines) {
-    if maxLines <= 1
-        return ShortTitle(title, maxLen)
-    totalMax := maxLen * maxLines
-    if StrLen(title) <= totalMax
-        toShow := title
-    else
-        toShow := SubStr(title, 1, totalMax - 3) . "..."
-    lines := []
-    remaining := toShow
-    while (remaining != "" && lines.Length < maxLines) {
-        if StrLen(remaining) <= maxLen {
-            lines.Push(remaining)
-            break
-        }
-        chunk := SubStr(remaining, 1, maxLen)
-        lastSpace := 0
-        for i, ch in StrSplit(chunk, "") {
-            if ch = " "
-                lastSpace := i
-        }
-        if lastSpace > 0 {
-            breakAt := lastSpace
-            line := Trim(SubStr(remaining, 1, breakAt))
-            remaining := Trim(SubStr(remaining, breakAt + 1))
-        } else {
-            line := chunk
-            remaining := Trim(SubStr(remaining, maxLen + 1))
-        }
-        lines.Push(line)
-    }
-    result := ""
-    for idx, line in lines {
-        if idx > 1
-            result .= "`r`n"
-        result .= line
-    }
-    return result != "" ? result : "Window"
-}
-
 ; Selects the tab at the given 1-based index (used by Ctrl+1–9 hotkeys).
 SelectTabByIndex(host, idx) {
     if !host || idx < 1 || idx > host.tabOrder.Length
@@ -2906,14 +2887,213 @@ SetWindowLongPtrValue(hwnd, index, value) {
     return DllCall("SetWindowLong", "ptr", hwnd, "int", index, "ptr", value, "ptr")
 }
 
-; Applies horizontal and vertical alignment style bits to a tab button via SetWindowLongPtr.
-; Must be called AFTER all Opt() calls, because Opt("+Wrap") and Opt("Background...") strip alignment bits.
-; Horizontal: SS_LEFT=0 (default), SS_CENTER=0x1, SS_RIGHT=0x2 (bits 0-1 of GWL_STYLE).
-; Vertical:   SS_CENTERIMAGE=0x200 vertically centers single-line text; not compatible with multi-line (TabMaxLines>=2).
-ApplyTabButtonAlignment(ctrl) {
-    global g_TabTitleAlignH, g_TabTitleAlignV, g_TabMaxLines
-    alignBits := (g_TabTitleAlignH = "right") ? 0x2 : (g_TabTitleAlignH = "center") ? 0x1 : 0
-    vCenterBit := (g_TabMaxLines = 1 && (g_TabTitleAlignV = "center" || g_TabTitleAlignV = "bottom")) ? 0x200 : 0
-    cur := GetWindowLongPtrValue(ctrl.Hwnd, -16)
-    SetWindowLongPtrValue(ctrl.Hwnd, -16, (cur & ~0x203) | alignBits | vCenterBit)
+GetTabWidthForHost(host) {
+    global g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth
+    tabCount := host.tabOrder.Length
+    if tabCount = 0
+        return 0
+    w := GetClientWidth(host.hwnd)
+    usableWidth := Max(200, w - (g_HostPadding * 2))
+    tabWidth := Floor((usableWidth - ((tabCount - 1) * g_TabGap)) / tabCount)
+    tabWidth := Max(g_MinTabWidth, Min(g_MaxTabWidth, tabWidth))
+    return tabWidth
+}
+
+GetTabIndexAtMouseX(host, mouseX) {
+    global g_HostPadding, g_TabGap
+    tabWidth := GetTabWidthForHost(host)
+    if tabWidth = 0
+        return 0
+    tabCount := host.tabOrder.Length
+    Loop tabCount {
+        i := A_Index
+        slotX := g_HostPadding + (i - 1) * (tabWidth + g_TabGap)
+        if mouseX >= slotX && mouseX < slotX + tabWidth
+            return i
+    }
+    return 0
+}
+
+GetTabZoneAtMouseX(host, mouseX, tabIdx) {
+    global g_HostPadding, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabGap
+    tabWidth := GetTabWidthForHost(host)
+    slotX := g_HostPadding + (tabIdx - 1) * (tabWidth + g_TabGap)
+    titleWidth := tabWidth - g_CloseButtonWidth - g_PopoutButtonWidth
+    if mouseX < slotX + titleWidth
+        return "title"
+    if mouseX < slotX + titleWidth + g_PopoutButtonWidth
+        return "popout"
+    return "close"
+}
+
+OnTabCanvasMouseMove(wParam, lParam, msg, hwnd) {
+    global g_HeaderHeight, g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
+    mouseX := lParam & 0xFFFF
+    mouseY := (lParam >> 16) & 0xFFFF
+    for host in GetAllHosts() {
+        if host.hwnd != hwnd
+            continue
+        tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+        if g_TabPosition = "bottom" {
+            clientH := GetClientHeight(host.hwnd)
+            tabBarY := clientH - g_HeaderHeight
+        }
+        newHoveredId := ""
+        if mouseY >= tabBarY && mouseY < tabBarY + g_HeaderHeight {
+            tabIdx := GetTabIndexAtMouseX(host, mouseX)
+            newHoveredId := (tabIdx > 0) ? host.tabOrder[tabIdx] : ""
+        }
+        if newHoveredId != host.tabHoveredId {
+            host.tabHoveredId := newHoveredId
+            DrawTabBar(host)
+        }
+        return
+    }
+}
+
+OnTabCanvasClick(wParam, lParam, msg, hwnd) {
+    global g_HeaderHeight, g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
+    mouseX := lParam & 0xFFFF
+    mouseY := (lParam >> 16) & 0xFFFF
+    for host in GetAllHosts() {
+        if host.hwnd != hwnd
+            continue
+        tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+        if g_TabPosition = "bottom" {
+            clientH := GetClientHeight(host.hwnd)
+            tabBarY := clientH - g_HeaderHeight
+        }
+        if mouseY < tabBarY || mouseY >= tabBarY + g_HeaderHeight
+            continue
+        tabIdx := GetTabIndexAtMouseX(host, mouseX)
+        if tabIdx = 0 || tabIdx > host.tabOrder.Length
+            return
+        tabId := host.tabOrder[tabIdx]
+        zone := GetTabZoneAtMouseX(host, mouseX, tabIdx)
+        if zone = "close"
+            CloseTab(host, tabId)
+        else if zone = "popout"
+            if host.isPopout
+                MergeBackTab(host, tabId)
+            else
+                PopOutTab(host, tabId)
+        else
+            SelectTab(host, tabId)
+        return
+    }
+}
+
+OnMessage(0x0200, OnTabCanvasMouseMove)
+OnMessage(0x0201, OnTabCanvasClick)
+
+; === GDI+ helpers (gdiplus.dll) ===
+
+GdiplusStartup() {
+    input := Buffer(16, 0)
+    NumPut("UInt", 1, input, 0)
+    token := 0
+    DllCall("gdiplus\GdiplusStartup", "UPtr*", &token, "Ptr", input, "Ptr", 0)
+    return token
+}
+
+HexToARGB(hex) {
+    return Integer("0xFF" . hex)
+}
+
+GdipCreateOffscreenBitmap(w, h, &pBitmap, &pGraphics) {
+    pBitmap := 0
+    pGraphics := 0
+    DllCall("gdiplus\GdipCreateBitmapFromScan0",
+        "Int", w, "Int", h, "Int", 0, "Int", 0x26200A, "Ptr", 0, "UPtr*", &pBitmap)
+    DllCall("gdiplus\GdipGetImageGraphicsContext",
+        "UPtr", pBitmap, "UPtr*", &pGraphics)
+    DllCall("gdiplus\GdipSetSmoothingMode", "UPtr", pGraphics, "Int", 4)
+    DllCall("gdiplus\GdipSetTextRenderingHint", "UPtr", pGraphics, "Int", 5)
+}
+
+GdipCleanupBitmap(pBitmap, pGraphics) {
+    DllCall("gdiplus\GdipDeleteGraphics", "UPtr", pGraphics)
+    DllCall("gdiplus\GdipDisposeImage", "UPtr", pBitmap)
+}
+
+GdipBitmapToHBITMAP(pBitmap) {
+    hBmp := 0
+    DllCall("gdiplus\GdipCreateHBITMAPFromBitmap",
+        "UPtr", pBitmap, "UPtr*", &hBmp, "UInt", 0)
+    return hBmp
+}
+
+GdipFillRoundRect(pGraphics, x, y, w, h, radius, argbColor) {
+    if radius <= 0 {
+        pBrush := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", argbColor, "UPtr*", &pBrush)
+        DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pBrush,
+            "Int", x, "Int", y, "Int", w, "Int", h)
+        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
+        return
+    }
+    pPath := 0
+    DllCall("gdiplus\GdipCreatePath", "Int", 0, "UPtr*", &pPath)
+    DllCall("gdiplus\GdipAddPathArcI", "UPtr", pPath,
+        "Int", x, "Int", y, "Int", radius*2, "Int", radius*2,
+        "Float", 180.0, "Float", 90.0)
+    DllCall("gdiplus\GdipAddPathArcI", "UPtr", pPath,
+        "Int", x+w-(radius*2), "Int", y, "Int", radius*2, "Int", radius*2,
+        "Float", 270.0, "Float", 90.0)
+    DllCall("gdiplus\GdipAddPathArcI", "UPtr", pPath,
+        "Int", x+w-(radius*2), "Int", y+h-(radius*2), "Int", radius*2, "Int", radius*2,
+        "Float", 0.0, "Float", 90.0)
+    DllCall("gdiplus\GdipAddPathArcI", "UPtr", pPath,
+        "Int", x, "Int", y+h-(radius*2), "Int", radius*2, "Int", radius*2,
+        "Float", 90.0, "Float", 90.0)
+    DllCall("gdiplus\GdipClosePathFigure", "UPtr", pPath)
+    pBrush := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "UInt", argbColor, "UPtr*", &pBrush)
+    DllCall("gdiplus\GdipFillPath", "UPtr", pGraphics,
+        "UPtr", pBrush, "UPtr", pPath)
+    DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
+    DllCall("gdiplus\GdipDeletePath", "UPtr", pPath)
+}
+
+GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fontSize, bold) {
+    pFamily := 0
+    DllCall("gdiplus\GdipCreateFontFamilyFromName",
+        "Str", fontFamilyName, "Ptr", 0, "UPtr*", &pFamily)
+    style := bold ? 1 : 0
+    pFont := 0
+    DllCall("gdiplus\GdipCreateFont",
+        "UPtr", pFamily, "Float", Float(fontSize), "Int", style, "Int", 3,
+        "UPtr*", &pFont)
+    pBrush := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "UInt", argbColor, "UPtr*", &pBrush)
+    rect := Buffer(16, 0)
+    NumPut("Float", Float(x), rect, 0)
+    NumPut("Float", Float(y), rect, 4)
+    NumPut("Float", Float(w), rect, 8)
+    NumPut("Float", Float(h), rect, 12)
+    pFormat := 0
+    DllCall("gdiplus\GdipCreateStringFormat", "Int", 0, "Int", 0, "UPtr*", &pFormat)
+    if !pFormat {
+        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
+        DllCall("gdiplus\GdipDeleteFont", "UPtr", pFont)
+        DllCall("gdiplus\GdipDeleteFontFamily", "UPtr", pFamily)
+        return
+    }
+    DllCall("gdiplus\GdipSetStringFormatAlign", "UPtr", pFormat, "Int", 1)
+    DllCall("gdiplus\GdipSetStringFormatLineAlign", "UPtr", pFormat, "Int", 1)
+    DllCall("gdiplus\GdipDrawString",
+        "UPtr", pGraphics, "Str", text, "Int", -1,
+        "UPtr", pFont, "Ptr", rect, "UPtr", pFormat, "UPtr", pBrush)
+    DllCall("gdiplus\GdipDeleteStringFormat", "UPtr", pFormat)
+    DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
+    DllCall("gdiplus\GdipDeleteFont", "UPtr", pFont)
+    DllCall("gdiplus\GdipDeleteFontFamily", "UPtr", pFamily)
+}
+
+ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics) {
+    hBmp := GdipBitmapToHBITMAP(pBitmap)
+    GdipCleanupBitmap(pBitmap, pGraphics)
+    oldBmp := SendMessage(0x172, 0, hBmp,, "ahk_id " canvasCtrl.Hwnd)
+    if oldBmp
+        DllCall("DeleteObject", "UPtr", oldBmp)
 }

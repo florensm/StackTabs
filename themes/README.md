@@ -48,6 +48,7 @@ Themes can include a `[Layout]` section to override spacing and tab dimensions. 
 | `TabBarAlignment` | `center` | Tab alignment within bar: `top`, `center`, or `bottom` |
 | `TabBarOffsetY` | *(legacy)* | Pixel offset (overrides alignment when set). Prefer `TabBarAlignment`. |
 | `TabIndicatorHeight` | `3` | Active tab indicator strip height (px). Use `0` to disable. |
+| `TabCornerRadius` | `5` | Tab corner radius (px). Use `0` for sharp corners. |
 | `ActiveTabStyle` | `full` | `full` = active tab has different background; `indicator` = only the strip, same bg as inactive |
 | `TabPosition` | `top` | Tab bar position: `top` or `bottom` |
 | `TabTitleMaxLen` | *(omit)* | Optional. Omit for fully dynamic (fits tab width, works for 1 or 2 lines). Set to cap titles shorter. |
