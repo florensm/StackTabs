@@ -1,4 +1,4 @@
-; StackTabs - owner-aware embedded window host
+﻿; StackTabs - owner-aware embedded window host
 ; AutoHotkey v2
 
 #Requires AutoHotkey v2.0
@@ -407,6 +407,7 @@ g_PopoutHosts := []          ; array of HostInstance for popped-out windows
 g_AllHostsCache := []
 g_PendingCandidates := Map() ; tabId -> {firstSeen, candidate} (main host only)
 g_WatchdogTimerActive := false
+g_WatchdogInterval := 50
 g_IsCleaningUp := false
 
 LoadConfigFromIni()
@@ -426,6 +427,10 @@ if g_UseCustomTitleBar
     OnMessage(0x83, OnWmNcCalcSize)
 DllCall("LoadLibrary", "Str", "gdiplus", "Ptr")
 g_GdipToken := GdiplusStartup()
+g_CachedFontFamily := Map()
+g_CachedFont := Map()
+g_CachedStringFormat := 0
+g_GdipShutdownPending := false
 BuildHostInstance(false)  ; create main host
 ; Shell Hook for event-driven window discovery
 DllCall("RegisterShellHookWindow", "Ptr", g_MainHost.hwnd)
@@ -441,8 +446,19 @@ OnMessage(g_ShellHookMsg, OnShellHook)
 ; WINEVENT_OUTOFCONTEXT (0): events are queued to this thread's message loop — no injection.
 g_WinEventHookCallback := CallbackCreate(WinEventProc, , 7)
 g_WinEventHooks := []
+; EVENT_OBJECT_SHOW (0x8002): window becomes visible
 g_WinEventHooks.Push(DllCall("SetWinEventHook",
-    "UInt", 0x8000, "UInt", 0x8018,
+    "UInt", 0x8002, "UInt", 0x8002,
+    "Ptr",  0,      "Ptr",  g_WinEventHookCallback,
+    "UInt", 0,      "UInt", 0, "UInt", 0, "Ptr"))
+; EVENT_OBJECT_NAMECHANGE (0x800C): title changed (WPF sets title after show)
+g_WinEventHooks.Push(DllCall("SetWinEventHook",
+    "UInt", 0x800C, "UInt", 0x800C,
+    "Ptr",  0,      "Ptr",  g_WinEventHookCallback,
+    "UInt", 0,      "UInt", 0, "UInt", 0, "Ptr"))
+; EVENT_OBJECT_UNCLOAKED (0x8018): UWP/WinUI window uncloaks
+g_WinEventHooks.Push(DllCall("SetWinEventHook",
+    "UInt", 0x8018, "UInt", 0x8018,
     "Ptr",  0,      "Ptr",  g_WinEventHookCallback,
     "UInt", 0,      "UInt", 0, "UInt", 0, "Ptr"))
 
@@ -932,6 +948,8 @@ BuildHostInstance(isPopout := false) {
     host.tabOrder := []
     host.activeTabId := ""
     host.tabHoveredId := ""
+    host.tabScrollOffset := 0   ; index of first visible tab (0-based)
+    host.tabScrollMax := 0      ; updated by DrawTabBar
     host.isResizing := false
 
     global g_ThemeBackground, g_ThemeWindowText, g_ThemeFontName, g_ThemeFontSize
@@ -973,12 +991,13 @@ BuildHostInstance(isPopout := false) {
     host.clientHwnd := host.hwnd
     global g_ShowOnlyWhenTabs
     showOpts := "w" g_HostWidth " h" g_HostHeight
-    if isPopout
-        showOpts .= " Hide"  ; Keep hidden until ArrangeHostsSideBySide positions it
+    ; Always pass Hide when the window should not be visible yet.
+    ; Show() followed immediately by Hide() briefly makes the window visible to the OS,
+    ; which causes tiling window managers to tile it as a floating window on first use.
+    ; Passing Hide to Show() sets the size without ever showing the window.
+    if isPopout || (!isPopout && g_ShowOnlyWhenTabs)
+        showOpts .= " Hide"
     host.gui.Show(showOpts)
-    ; Keep hidden when ShowOnlyWhenTabs (host stays in tray until 1+ tabs)
-    if !isPopout && g_ShowOnlyWhenTabs
-        host.gui.Hide()
 
     ; Request Windows 11 rounded corners (no-op if already applied by system)
     cornerPref := 2  ; DWM_WCP_ROUND
@@ -1054,7 +1073,7 @@ IsReadyToStack(hwnd) {
 
 ; Adds candidate to pending map and starts watchdog timer; stacks after delay when title is stable.
 TryStackOrPending(host, candidate) {
-    global g_MainHost, g_PendingCandidates, g_StackDelayMs, g_WatchdogMaxMs, g_ShowOnlyWhenTabs, g_WatchdogTimerActive
+    global g_MainHost, g_PendingCandidates, g_StackDelayMs, g_WatchdogMaxMs, g_ShowOnlyWhenTabs, g_WatchdogTimerActive, g_WatchdogInterval
     if !g_PendingCandidates.Has(candidate.id) {
         ; First time seeing this candidate â€” record the timestamp
         now := A_TickCount
@@ -1066,7 +1085,8 @@ TryStackOrPending(host, candidate) {
     }
     if !g_WatchdogTimerActive {
         g_WatchdogTimerActive := true
-        SetTimer(WatchdogCheck, 10)
+        g_WatchdogInterval := 50
+        SetTimer(WatchdogCheck, -g_WatchdogInterval)
     }
 }
 
@@ -1095,10 +1115,11 @@ ProcessPendingCandidate(tabId, pending) {
 
 ; Timer callback: stacks candidates that passed delay + title-stability; removes stale pending.
 WatchdogCheck(*) {
-    global g_MainHost, g_PendingCandidates, g_StackDelayMs, g_StackSwitchDelayMs, g_WatchdogMaxMs, g_WatchdogTimerActive, g_ShowOnlyWhenTabs, g_DebugDiscovery
+    global g_MainHost, g_PendingCandidates, g_StackDelayMs, g_StackSwitchDelayMs, g_WatchdogMaxMs, g_WatchdogTimerActive, g_WatchdogInterval, g_ShowOnlyWhenTabs, g_DebugDiscovery
     if !g_MainHost || g_PendingCandidates.Count = 0 {
         g_WatchdogTimerActive := false
         SetTimer(WatchdogCheck, 0)
+        g_WatchdogInterval := 50   ; reset for next activation
         return
     }
     now := A_TickCount
@@ -1150,6 +1171,12 @@ WatchdogCheck(*) {
     if g_PendingCandidates.Count = 0 {
         g_WatchdogTimerActive := false
         SetTimer(WatchdogCheck, 0)
+        g_WatchdogInterval := 50
+    } else {
+        ; Adaptive back-off: start at 50ms, double each tick up to 400ms.
+        ; Resets to 50ms when candidates are cleared.
+        g_WatchdogInterval := Min(400, g_WatchdogInterval * 2)
+        SetTimer(WatchdogCheck, -g_WatchdogInterval)
     }
 }
 
@@ -1194,13 +1221,13 @@ OnShellHook(wParam, lParam, msg, hwnd) {
         OnWindowDestroyed(lParam)
 }
 
-; WinEvent hook callback. Range 0x8002-0x8018 is registered; we only act on three events:
+; WinEvent hook callback. Three narrow hooks are registered, one per event:
 ;   0x8002 EVENT_OBJECT_SHOW       — window becomes visible (fires before taskbar registration)
 ;   0x800C EVENT_OBJECT_NAMECHANGE — title set/changed (WPF often sets title after show)
 ;   0x8018 EVENT_OBJECT_UNCLOAKED  — UWP/WinUI window uncloaks
 ; idObject=0 (OBJID_WINDOW) means the event is for the window object itself, not a child control.
 WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsEventTime) {
-    if (event != 0x8000 && event != 0x8002 && event != 0x800C && event != 0x8018)
+    if (event != 0x8002 && event != 0x800C && event != 0x8018)
         return
     if (idObject != 0 || !hwnd)
         return
@@ -1389,13 +1416,12 @@ RefreshWindows(*) {
 
         if structureChanged || titleChanged
             LayoutTabButtons(host)
-        ; RedrawAnyWindow only for structural changes (tabs added/removed); for title-only changes
-        ; SelectTab below handles the repaint via UpdateTabButtonStyles → WinRedraw.
         if structureChanged
             RedrawAnyWindow(host.hwnd)
-        ; When a tab's title changed, switch to that tab
-        if titleChanged && tabIdOfLastTitleChange != ""
-            SelectTab(host, tabIdOfLastTitleChange)
+        ; Title changed: redraw tab bar to show the new label, but do NOT switch tabs.
+        ; Switching focus away from the user's current tab on a background title change is disruptive.
+        if titleChanged && !structureChanged
+            DrawTabBar(host)
 
         ; Only refresh content/tabs when something changed to avoid flickering
         needsContentRefresh := structureChanged || (host.activeTabId != (host.HasProp("lastRefreshActiveTabId") ? host.lastRefreshActiveTabId : ""))
@@ -1878,10 +1904,19 @@ AttachTrackedWindow(host, tabId) {
     newExStyle &= ~0x00000200 ; WS_EX_CLIENTEDGE
     newExStyle &= ~0x00000100 ; WS_EX_WINDOWEDGE
 
-    SetWindowLongPtrValue(hwnd, -8, 0)
-    SetWindowLongPtrValue(hwnd, -16, newStyle)
-    SetWindowLongPtrValue(hwnd, -20, newExStyle)
-    DllCall("SetParent", "ptr", hwnd, "ptr", host.clientHwnd, "ptr")
+    prevOwner := SetWindowLongPtrValue(hwnd, -8, 0)
+    prevStyle  := SetWindowLongPtrValue(hwnd, -16, newStyle)
+    prevExStyle := SetWindowLongPtrValue(hwnd, -20, newExStyle)
+    newParent := DllCall("SetParent", "ptr", hwnd, "ptr", host.clientHwnd, "ptr")
+    if !newParent {
+        ; Reparent failed — undo style changes to leave window in its original state
+        SetWindowLongPtrValue(hwnd, -8, prevOwner)
+        SetWindowLongPtrValue(hwnd, -16, record.originalContentStyle)
+        SetWindowLongPtrValue(hwnd, -20, record.originalContentExStyle)
+        AppendDebugLog("AttachTrackedWindow: SetParent failed for hwnd=" hwnd " tabId=" tabId "`r`n", true)
+        SendMessage(0x000B, 1, 0,, "ahk_id " hwnd)  ; WM_SETREDRAW TRUE (re-enable drawing)
+        return false
+    }
 
     ; Position at final content rect immediately so when we show it there's no resize glitch.
     GetEmbedRect(host, &areaX, &areaY, &areaW, &areaH)
@@ -1933,7 +1968,9 @@ DetachTrackedWindow(host, tabId, restoreWindow := true, restoreSource := true) {
             posY := record.originalContentY
         }
 
-        DllCall("SetParent", "ptr", hwnd, "ptr", parentHwnd, "ptr")
+        newParent := DllCall("SetParent", "ptr", hwnd, "ptr", parentHwnd, "ptr")
+        if !newParent
+            AppendDebugLog("DetachTrackedWindow: SetParent failed for hwnd=" hwnd " tabId=" tabId "`r`n", true)
         SetWindowLongPtrValue(hwnd, -8, record.originalContentOwner)
         SetWindowLongPtrValue(hwnd, -16, record.originalContentStyle)
         SetWindowLongPtrValue(hwnd, -20, record.originalContentExStyle)
@@ -1961,7 +1998,11 @@ TransferTrackedWindow(sourceHost, destHost, tabId) {
 
     ; Direct reparent: source host's client -> dest host's client
     ; Window stays as WS_CHILD the whole time - no restore to original
-    DllCall("SetParent", "ptr", hwnd, "ptr", destHost.clientHwnd, "ptr")
+    newParent := DllCall("SetParent", "ptr", hwnd, "ptr", destHost.clientHwnd, "ptr")
+    if !newParent {
+        AppendDebugLog("TransferTrackedWindow: SetParent failed for hwnd=" hwnd " tabId=" tabId "`r`n", true)
+        return false
+    }
 
     flags := SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE
     DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", 0, "int", 0, "int", 100, "int", 100, "uint", flags)
@@ -2056,8 +2097,6 @@ SelectTab(host, tabId, *) {
     host.activeTabId := tabId
     ShowOnlyActiveTab(host)
     UpdateHostTitle(host)
-    ; Give keyboard focus to embedded content so Ctrl+P etc. work immediately without a click.
-    ; WinActivate on a child from another process doesn't set focus; we use AttachThreadInput+SetFocus.
     if host.tabRecords.Has(tabId) && IsWindowExists(host.tabRecords[tabId].contentHwnd)
         FocusEmbeddedContent(host.hwnd, host.tabRecords[tabId].contentHwnd)
 }
@@ -2349,10 +2388,30 @@ DrawTabBar(host) {
         return
     }
 
+    arrowW := 24
     usableWidth := Max(200, tabBarW - (g_HostPadding * 2))
     tabWidth := Floor((usableWidth - ((tabCount - 1) * g_TabGap)) / tabCount)
     tabWidth := Max(g_MinTabWidth, Min(g_MaxTabWidth, tabWidth))
+    ; Overflow: if tabs exceed available width, switch to scroll mode
+    totalW := tabCount * tabWidth + (tabCount - 1) * g_TabGap
+    needScroll := totalW > usableWidth
     titleWidth := tabWidth - g_CloseButtonWidth - g_PopoutButtonWidth
+
+    ; Clamp scroll offset and compute how many tabs fit
+    if needScroll {
+        visibleCount := Max(1, Floor((usableWidth - arrowW * 2) / (tabWidth + g_TabGap)))
+        host.tabScrollMax := Max(0, tabCount - visibleCount)
+        host.tabScrollOffset := Max(0, Min(host.tabScrollOffset, host.tabScrollMax))
+        drawStart := host.tabScrollOffset + 1   ; 1-based index into host.tabOrder
+        drawEnd   := Min(tabCount, host.tabScrollOffset + visibleCount)
+        x := g_HostPadding + arrowW
+    } else {
+        host.tabScrollMax := 0
+        host.tabScrollOffset := 0
+        drawStart := 1
+        drawEnd   := tabCount
+        x := g_HostPadding
+    }
 
     if g_TabBarOffsetY >= 0
         tabOffsetY := g_TabBarOffsetY
@@ -2366,8 +2425,9 @@ DrawTabBar(host) {
             tabOffsetY := (tabBarH - g_TabHeight) // 2
     }
 
-    x := g_HostPadding
     for i, tabId in host.tabOrder {
+        if needScroll && (i < drawStart || i > drawEnd)
+            continue
         isActive  := (tabId = host.activeTabId)
         isHovered := (tabId = host.tabHoveredId)
 
@@ -2389,8 +2449,11 @@ DrawTabBar(host) {
             indicY := (g_TabPosition = "bottom")
                 ? tabOffsetY
                 : tabOffsetY + g_TabHeight - g_TabIndicatorHeight
-            GdipFillRoundRect(pGraphics, x + 4, indicY,
-                titleWidth - 8, g_TabIndicatorHeight, 1, indicColor)
+            indicW := Max(1, tabWidth - 8)
+            ; Radius must not exceed half the height — GDI+ arc math goes negative otherwise.
+            ; Use 0 (sharp rect) when indicator is thinner than 3px.
+            indicR := (g_TabIndicatorHeight >= 3) ? 1 : 0
+            GdipFillRoundRect(pGraphics, x + 4, indicY, indicW, g_TabIndicatorHeight, indicR, indicColor)
         }
 
         ; Tab title
@@ -2415,6 +2478,23 @@ DrawTabBar(host) {
             iconColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
 
         x += tabWidth + g_TabGap
+    }
+
+    ; Draw left scroll arrow only when can scroll left (tabScrollOffset > 0)
+    if needScroll && host.tabScrollOffset > 0 {
+        arrowColor := HexToARGB(g_ThemeTabActiveText)
+        GdipDrawStringSimple(pGraphics, Chr(0xE76B),
+            g_HostPadding, tabOffsetY, arrowW, g_TabHeight,
+            arrowColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
+    }
+
+    ; Draw right scroll arrow only when can scroll right (tabScrollOffset < tabScrollMax)
+    if needScroll && host.tabScrollOffset < host.tabScrollMax {
+        arrowColor := HexToARGB(g_ThemeTabActiveText)
+        GdipDrawStringSimple(pGraphics, Chr(0xE76C),
+            g_HostPadding + arrowW + (drawEnd - drawStart + 1) * (tabWidth + g_TabGap) - g_TabGap,
+            tabOffsetY, arrowW, g_TabHeight,
+            arrowColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
     }
 
     ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics)
@@ -2489,6 +2569,7 @@ CleanupAll(*) {
     g_IsCleaningUp := true
     g_WatchdogTimerActive := false
     SetTimer(WatchdogCheck, 0)
+    SetTimer(TooltipCheckTimer, 0)
 
     if IsSet(g_WinEventHooks) {
         for hook in g_WinEventHooks
@@ -2502,6 +2583,22 @@ CleanupAll(*) {
     }
 
     g_PendingCandidates := Map()
+    ; Release cached GDI+ font objects
+    global g_CachedFontFamily, g_CachedFont, g_CachedStringFormat, g_GdipToken
+    for _, pFamily in g_CachedFontFamily
+        DllCall("gdiplus\GdipDeleteFontFamily", "UPtr", pFamily)
+    g_CachedFontFamily := Map()
+    for _, pFont in g_CachedFont
+        DllCall("gdiplus\GdipDeleteFont", "UPtr", pFont)
+    g_CachedFont := Map()
+    if g_CachedStringFormat {
+        DllCall("gdiplus\GdipDeleteStringFormat", "UPtr", g_CachedStringFormat)
+        g_CachedStringFormat := 0
+    }
+    if g_GdipToken {
+        DllCall("gdiplus\GdiplusShutdown", "UPtr", g_GdipToken)
+        g_GdipToken := 0
+    }
     g_IsCleaningUp := false
 }
 
@@ -2745,17 +2842,17 @@ CreateBadgedIcon(hSourceIcon, badgeHex) {
 
     DllCall("SelectObject", "ptr", hMemDC, "ptr", hOldBmp, "ptr")
     DllCall("DeleteDC", "ptr", hMemDC)
-    if !hIcon {
+    ; Always delete the GDI objects — CreateIconIndirect makes internal copies
+    DllCall("DeleteObject", "ptr", hMaskBmp)
+    if !hIcon
         DllCall("DeleteObject", "ptr", hBmp)
-        DllCall("DeleteObject", "ptr", hMaskBmp)
-    }
     return hIcon
 }
 
 ; Appends text to discovery.txt when DebugDiscovery=1.
-AppendDebugLog(text) {
+AppendDebugLog(text, critical := false) {
     global g_DebugLogPath, g_DebugDiscovery
-    if !g_DebugDiscovery
+    if !g_DebugDiscovery && !critical
         return
     FileAppend("[" FormatTime(, "yyyy-MM-dd HH:mm:ss") "]`r`n" text, g_DebugLogPath, "UTF-8")
 }
@@ -2905,9 +3002,15 @@ GetTabIndexAtMouseX(host, mouseX) {
     if tabWidth = 0
         return 0
     tabCount := host.tabOrder.Length
+    arrowW := 24
+    needScroll := host.HasProp("tabScrollMax") && host.tabScrollMax > 0
+    startX    := needScroll ? g_HostPadding + arrowW : g_HostPadding
+    startIdx  := needScroll ? host.tabScrollOffset + 1 : 1
     Loop tabCount {
         i := A_Index
-        slotX := g_HostPadding + (i - 1) * (tabWidth + g_TabGap)
+        if i < startIdx
+            continue
+        slotX := startX + (i - startIdx) * (tabWidth + g_TabGap)
         if mouseX >= slotX && mouseX < slotX + tabWidth
             return i
     }
@@ -2917,7 +3020,11 @@ GetTabIndexAtMouseX(host, mouseX) {
 GetTabZoneAtMouseX(host, mouseX, tabIdx) {
     global g_HostPadding, g_CloseButtonWidth, g_PopoutButtonWidth, g_TabGap
     tabWidth := GetTabWidthForHost(host)
-    slotX := g_HostPadding + (tabIdx - 1) * (tabWidth + g_TabGap)
+    arrowW := 24
+    needScroll := host.HasProp("tabScrollMax") && host.tabScrollMax > 0
+    startX   := needScroll ? g_HostPadding + arrowW : g_HostPadding
+    startIdx := needScroll ? host.tabScrollOffset + 1 : 1
+    slotX := startX + (tabIdx - startIdx) * (tabWidth + g_TabGap)
     titleWidth := tabWidth - g_CloseButtonWidth - g_PopoutButtonWidth
     if mouseX < slotX + titleWidth
         return "title"
@@ -2926,20 +3033,45 @@ GetTabZoneAtMouseX(host, mouseX, tabIdx) {
     return "close"
 }
 
+; Returns true if the cursor is over any host's tab bar (screen coords).
+IsMouseOverAnyTabBar() {
+    global g_HeaderHeight, g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
+    MouseGetPos(&screenX, &screenY)
+    pt := Buffer(8, 0)
+    for host in GetAllHosts() {
+        NumPut("Int", screenX, pt, 0)
+        NumPut("Int", screenY, pt, 4)
+        DllCall("ScreenToClient", "Ptr", host.hwnd, "Ptr", pt)
+        clientX := NumGet(pt, 0, "Int")
+        clientY := NumGet(pt, 4, "Int")
+        clientW := GetClientWidth(host.hwnd)
+        clientH := GetClientHeight(host.hwnd)
+        if clientX < 0 || clientY < 0 || clientX >= clientW || clientY >= clientH
+            continue
+        tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+        if g_TabPosition = "bottom"
+            tabBarY := clientH - g_HeaderHeight
+        if clientY >= tabBarY && clientY < tabBarY + g_HeaderHeight
+            return true
+    }
+    return false
+}
+
 OnTabCanvasMouseMove(wParam, lParam, msg, hwnd) {
     global g_HeaderHeight, g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
     mouseX := lParam & 0xFFFF
     mouseY := (lParam >> 16) & 0xFFFF
     for host in GetAllHosts() {
-        if host.hwnd != hwnd
+        if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
         tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
         if g_TabPosition = "bottom" {
             clientH := GetClientHeight(host.hwnd)
             tabBarY := clientH - g_HeaderHeight
         }
+        checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
         newHoveredId := ""
-        if mouseY >= tabBarY && mouseY < tabBarY + g_HeaderHeight {
+        if mouseY >= checkY && mouseY < checkY + g_HeaderHeight {
             tabIdx := GetTabIndexAtMouseX(host, mouseX)
             newHoveredId := (tabIdx > 0) ? host.tabOrder[tabIdx] : ""
         }
@@ -2947,24 +3079,66 @@ OnTabCanvasMouseMove(wParam, lParam, msg, hwnd) {
             host.tabHoveredId := newHoveredId
             DrawTabBar(host)
         }
+        if newHoveredId != "" && host.tabRecords.Has(newHoveredId) {
+            fullTitle := FilterTitle(host.tabRecords[newHoveredId].title)
+            if StrLen(fullTitle) > 28 {
+                ToolTip(fullTitle)
+                SetTimer(TooltipCheckTimer, 100)
+            } else {
+                ToolTip()
+                SetTimer(TooltipCheckTimer, 0)
+            }
+        } else {
+            ToolTip()
+            SetTimer(TooltipCheckTimer, 0)
+        }
         return
+    }
+    ToolTip()
+    SetTimer(TooltipCheckTimer, 0)
+}
+
+TooltipCheckTimer(*) {
+    if !IsMouseOverAnyTabBar() {
+        ToolTip()
+        SetTimer(TooltipCheckTimer, 0)
     }
 }
 
 OnTabCanvasClick(wParam, lParam, msg, hwnd) {
     global g_HeaderHeight, g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
+    global g_HostPadding, g_TabGap
+    arrowW := 24
     mouseX := lParam & 0xFFFF
     mouseY := (lParam >> 16) & 0xFFFF
     for host in GetAllHosts() {
-        if host.hwnd != hwnd
+        if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
         tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
         if g_TabPosition = "bottom" {
             clientH := GetClientHeight(host.hwnd)
             tabBarY := clientH - g_HeaderHeight
         }
-        if mouseY < tabBarY || mouseY >= tabBarY + g_HeaderHeight
+        ; When message is from tab canvas, coords are canvas-relative (tab bar origin = 0,0)
+        checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
+        if mouseY < checkY || mouseY >= checkY + g_HeaderHeight
             continue
+        ; Scroll arrows — only handle when arrow is visible (can scroll in that direction)
+        if host.tabScrollMax > 0 {
+            if host.tabScrollOffset > 0 && mouseX >= g_HostPadding && mouseX < g_HostPadding + arrowW {
+                host.tabScrollOffset := Max(0, host.tabScrollOffset - 1)
+                DrawTabBar(host)
+                return
+            }
+            tabWidth := GetTabWidthForHost(host)
+            visibleCount := Max(1, Floor((GetClientWidth(host.hwnd) - (g_HostPadding * 2) - arrowW * 2) / (tabWidth + g_TabGap)))
+            rightArrowX := g_HostPadding + arrowW + visibleCount * (tabWidth + g_TabGap) - g_TabGap
+            if host.tabScrollOffset < host.tabScrollMax && mouseX >= rightArrowX && mouseX < rightArrowX + arrowW {
+                host.tabScrollOffset := Min(host.tabScrollMax, host.tabScrollOffset + 1)
+                DrawTabBar(host)
+                return
+            }
+        }
         tabIdx := GetTabIndexAtMouseX(host, mouseX)
         if tabIdx = 0 || tabIdx > host.tabOrder.Length
             return
@@ -2983,8 +3157,70 @@ OnTabCanvasClick(wParam, lParam, msg, hwnd) {
     }
 }
 
+OnTabCanvasMidClick(wParam, lParam, msg, hwnd) {
+    global g_HeaderHeight, g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
+    mouseX := lParam & 0xFFFF
+    mouseY := (lParam >> 16) & 0xFFFF
+    for host in GetAllHosts() {
+        if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
+            continue
+        tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+        if g_TabPosition = "bottom" {
+            clientH := GetClientHeight(host.hwnd)
+            tabBarY := clientH - g_HeaderHeight
+        }
+        checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
+        if mouseY < checkY || mouseY >= checkY + g_HeaderHeight
+            return
+        tabIdx := GetTabIndexAtMouseX(host, mouseX)
+        if tabIdx > 0 && tabIdx <= host.tabOrder.Length
+            CloseTab(host, host.tabOrder[tabIdx])
+        return
+    }
+}
+
+OnTabCanvasRightClick(wParam, lParam, msg, hwnd) {
+    global g_HeaderHeight, g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
+    mouseX := lParam & 0xFFFF
+    mouseY := (lParam >> 16) & 0xFFFF
+    for host in GetAllHosts() {
+        if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
+            continue
+        tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+        if g_TabPosition = "bottom" {
+            clientH := GetClientHeight(host.hwnd)
+            tabBarY := clientH - g_HeaderHeight
+        }
+        checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
+        if mouseY < checkY || mouseY >= checkY + g_HeaderHeight
+            return
+        tabIdx := GetTabIndexAtMouseX(host, mouseX)
+        if tabIdx = 0 || tabIdx > host.tabOrder.Length
+            return
+        tabId := host.tabOrder[tabIdx]
+        if !host.tabRecords.Has(tabId)
+            return
+        record := host.tabRecords[tabId]
+        m := Menu()
+        h := host
+        t := tabId
+        ttl := record.title
+        if host.isPopout
+            m.Add("Merge to Main", ((a, b, *) => MergeBackTab(a, b)).Bind(h, t))
+        else
+            m.Add("Pop Out", ((a, b, *) => PopOutTab(a, b)).Bind(h, t))
+        m.Add("Copy Title", ((s, *) => (A_Clipboard := s)).Bind(ttl))
+        m.Add()
+        m.Add("Close Tab", ((a, b, *) => CloseTab(a, b)).Bind(h, t))
+        m.Show()
+        return
+    }
+}
+
 OnMessage(0x0200, OnTabCanvasMouseMove)
 OnMessage(0x0201, OnTabCanvasClick)
+OnMessage(0x0204, OnTabCanvasRightClick)
+OnMessage(0x0207, OnTabCanvasMidClick)
 
 ; === GDI+ helpers (gdiplus.dll) ===
 
@@ -3056,38 +3292,62 @@ GdipFillRoundRect(pGraphics, x, y, w, h, radius, argbColor) {
 }
 
 GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fontSize, bold) {
-    pFamily := 0
-    DllCall("gdiplus\GdipCreateFontFamilyFromName",
-        "Str", fontFamilyName, "Ptr", 0, "UPtr*", &pFamily)
-    style := bold ? 1 : 0
-    pFont := 0
-    DllCall("gdiplus\GdipCreateFont",
-        "UPtr", pFamily, "Float", Float(fontSize), "Int", style, "Int", 3,
-        "UPtr*", &pFont)
+    global g_CachedFontFamily, g_CachedFont, g_CachedStringFormat
+
+    ; Build cache keys
+    familyKey := fontFamilyName
+    fontKey := fontFamilyName "|" fontSize "|" (bold ? 1 : 0)
+
+    ; Create or reuse font family
+    if !g_CachedFontFamily.Has(familyKey) {
+        pFamily := 0
+        DllCall("gdiplus\GdipCreateFontFamilyFromName",
+            "Str", fontFamilyName, "Ptr", 0, "UPtr*", &pFamily)
+        if !pFamily
+            return
+        g_CachedFontFamily[familyKey] := pFamily
+    }
+    pFamily := g_CachedFontFamily[familyKey]
+
+    ; Create or reuse font
+    if !g_CachedFont.Has(fontKey) {
+        pFont := 0
+        DllCall("gdiplus\GdipCreateFont",
+            "UPtr", pFamily, "Float", Float(fontSize),
+            "Int", bold ? 1 : 0, "Int", 3, "UPtr*", &pFont)
+        if !pFont
+            return
+        g_CachedFont[fontKey] := pFont
+    }
+    pFont := g_CachedFont[fontKey]
+
+    ; Create or reuse string format (alignment is set per-call, format is stateless for center/center)
+    if !g_CachedStringFormat {
+        pFormat := 0
+        DllCall("gdiplus\GdipCreateStringFormat", "Int", 0, "Int", 0, "UPtr*", &pFormat)
+        if !pFormat
+            return
+        DllCall("gdiplus\GdipSetStringFormatAlign", "UPtr", pFormat, "Int", 1)
+        DllCall("gdiplus\GdipSetStringFormatLineAlign", "UPtr", pFormat, "Int", 1)
+        g_CachedStringFormat := pFormat
+    }
+
     pBrush := 0
     DllCall("gdiplus\GdipCreateSolidFill", "UInt", argbColor, "UPtr*", &pBrush)
+    if !pBrush
+        return
+
     rect := Buffer(16, 0)
     NumPut("Float", Float(x), rect, 0)
     NumPut("Float", Float(y), rect, 4)
     NumPut("Float", Float(w), rect, 8)
     NumPut("Float", Float(h), rect, 12)
-    pFormat := 0
-    DllCall("gdiplus\GdipCreateStringFormat", "Int", 0, "Int", 0, "UPtr*", &pFormat)
-    if !pFormat {
-        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
-        DllCall("gdiplus\GdipDeleteFont", "UPtr", pFont)
-        DllCall("gdiplus\GdipDeleteFontFamily", "UPtr", pFamily)
-        return
-    }
-    DllCall("gdiplus\GdipSetStringFormatAlign", "UPtr", pFormat, "Int", 1)
-    DllCall("gdiplus\GdipSetStringFormatLineAlign", "UPtr", pFormat, "Int", 1)
+
     DllCall("gdiplus\GdipDrawString",
         "UPtr", pGraphics, "Str", text, "Int", -1,
-        "UPtr", pFont, "Ptr", rect, "UPtr", pFormat, "UPtr", pBrush)
-    DllCall("gdiplus\GdipDeleteStringFormat", "UPtr", pFormat)
+        "UPtr", pFont, "Ptr", rect, "UPtr", g_CachedStringFormat, "UPtr", pBrush)
+
     DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
-    DllCall("gdiplus\GdipDeleteFont", "UPtr", pFont)
-    DllCall("gdiplus\GdipDeleteFontFamily", "UPtr", pFamily)
 }
 
 ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics) {
@@ -3097,3 +3357,33 @@ ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics) {
     if oldBmp
         DllCall("DeleteObject", "UPtr", oldBmp)
 }
+
+OnTabCanvasMouseWheel(wParam, lParam, msg, hwnd) {
+    global g_HeaderHeight, g_UseCustomTitleBar, g_TitleBarHeight, g_TabPosition
+    ; WM_MOUSEWHEEL goes to the focus window (usually embedded content), not the window under cursor.
+    ; Use cursor position (screen coords in lParam) and check if it's over any host's tab bar.
+    screenX := (lParam & 0xFFFF) | ((lParam & 0x8000) ? 0xFFFF0000 : 0)
+    screenY := ((lParam >> 16) & 0xFFFF) | (((lParam >> 16) & 0x8000) ? 0xFFFF0000 : 0)
+    delta := (wParam >> 16) > 32767 ? -1 : 1   ; WHEEL_DELTA sign
+    pt := Buffer(8, 0)
+    for host in GetAllHosts() {
+        NumPut("Int", screenX, pt, 0)
+        NumPut("Int", screenY, pt, 4)
+        DllCall("ScreenToClient", "Ptr", host.hwnd, "Ptr", pt)
+        clientX := NumGet(pt, 0, "Int")
+        clientY := NumGet(pt, 4, "Int")
+        tabBarY := g_UseCustomTitleBar ? g_TitleBarHeight : 0
+        if g_TabPosition = "bottom" {
+            clientH := GetClientHeight(host.hwnd)
+            tabBarY := clientH - g_HeaderHeight
+        }
+        if clientY < tabBarY || clientY >= tabBarY + g_HeaderHeight
+            continue
+        if host.tabScrollMax > 0 {
+            host.tabScrollOffset := Max(0, Min(host.tabScrollMax, host.tabScrollOffset - delta))
+            DrawTabBar(host)
+        }
+        return
+    }
+}
+OnMessage(0x020A, OnTabCanvasMouseWheel)
