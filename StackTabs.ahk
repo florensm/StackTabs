@@ -385,6 +385,20 @@ SwitchTheme(themeFileName) {
         return
     }
     IniWrite(themeFileName, g_ConfigPath, "Theme", "ThemeFile")
+    ; Free cached GDI+ font objects from the previous theme before loading the new one.
+    ; Without this, every theme switch leaks font family and font handles permanently.
+    global g_CachedFontFamily, g_CachedFont, g_CachedStringFormat
+    for _, pFamily in g_CachedFontFamily
+        DllCall("gdiplus\GdipDeleteFontFamily", "UPtr", pFamily)
+    g_CachedFontFamily := Map()
+    for _, pFont in g_CachedFont
+        DllCall("gdiplus\GdipDeleteFont", "UPtr", pFont)
+    g_CachedFont := Map()
+    if IsObject(g_CachedStringFormat) {
+        for _, pFmt in g_CachedStringFormat
+            DllCall("gdiplus\GdipDeleteStringFormat", "UPtr", pFmt)
+        g_CachedStringFormat := Map()
+    }
     g_ActiveThemeFile := themeFileName
     ; Reset layout from config so theme fallbacks use config values, not previous theme's
     LoadConfigFromIni()
@@ -559,19 +573,30 @@ ShowTabSwitcher() {
         }
     }
 
-    ; Layout
-    cardW   := 200
-    cardH   := 56
-    cardGap := 8
-    pad     := 16
-    searchH := 38
-    cols    := Min(4, allTabs.Length)
-    rows    := Ceil(allTabs.Length / cols)
-    oW := Max(420, pad * 2 + cols * cardW + (cols - 1) * cardGap)
-    oH := Min(A_ScreenHeight - 80,
-              pad * 2 + searchH + cardGap + rows * cardH + (rows - 1) * cardGap)
-    ox := (A_ScreenWidth  - oW) // 2
-    oy := (A_ScreenHeight - oH) // 2
+    ; Layout — vertical list (command-palette style)
+    overlayWidth   := 420
+    rowHeight      := 36
+    searchBarHeight := 38
+    pad            := 16
+    listGap        := 8
+    listAreaHeight := Min(allTabs.Length * rowHeight, 600)
+    overlayHeight  := pad + searchBarHeight + listGap + listAreaHeight + pad
+
+    ; Position: center on StackTabs host window, fallback to screen center
+    switcherHost := GetActiveStackTabsHost()
+    if switcherHost && IsWindowExists(switcherHost.hwnd) {
+        try {
+            WinGetPos(&hx, &hy, &hw, &hh, "ahk_id " switcherHost.hwnd)
+            ox := hx + (hw - overlayWidth) // 2
+            oy := hy + (hh - overlayHeight) // 2
+        } catch {
+            ox := (A_ScreenWidth - overlayWidth) // 2
+            oy := (A_ScreenHeight - overlayHeight) // 2
+        }
+    } else {
+        ox := (A_ScreenWidth - overlayWidth) // 2
+        oy := (A_ScreenHeight - overlayHeight) // 2
+    }
 
     g_SwitcherGui           := Gui("+AlwaysOnTop -Caption +ToolWindow", "TabSwitcher")
     g_SwitcherGui.BackColor  := g_ThemeTabBarBg
@@ -582,35 +607,32 @@ ShowTabSwitcher() {
     ; Search box — cue-banner text via EM_SETCUEBANNER after show
     g_SwitcherGui.SetFont("s" (g_ThemeFontSize + 1) " c" g_ThemeWindowText, g_ThemeFontName)
     searchBox := g_SwitcherGui.Add("Edit",
-        "x" pad " y" pad " w" (oW - pad * 2) " h" searchH
+        "x" pad " y" pad " w" (overlayWidth - pad * 2) " h" searchBarHeight
         " Background" g_ThemeTabBarBg " c" g_ThemeWindowText, "")
     searchBox.SetFont("s" (g_ThemeFontSize + 1) " c" g_ThemeWindowText, g_ThemeFontName)
 
-    cardAreaY := pad + searchH + cardGap
+    listAreaY := pad + searchBarHeight + listGap
 
     Loop allTabs.Length {
         i    := A_Index
-        col  := Mod(i - 1, cols)
-        row  := (i - 1) // cols
-        cx   := pad + col * (cardW + cardGap)
-        cy   := cardAreaY + row * (cardH + cardGap)
+        ry   := listAreaY + (i - 1) * rowHeight
         item := allTabs[i]
         isSel := (i = g_SwitcherSelVisIdx)
         bg := isSel ? g_ThemeTabActiveBg : g_ThemeTabInactiveBg
         fg := isSel ? g_ThemeTabActiveText : g_ThemeTabInactiveText
 
-        card := g_SwitcherGui.Add("Text",
-            "x" cx " y" cy " w" cardW " h" cardH
-            " +0x200 Center Background" bg " c" fg,
-            ShortTitle(item.title, 28))
-        card.SetFont("s" g_ThemeFontSize " c" fg, g_ThemeFontNameTab)
-        card.tabSwitcherIdx := i
-        card.OnEvent("Click", SwitcherCardClick)
-        g_SwitcherCards.Push(card)
+        row := g_SwitcherGui.Add("Text",
+            "x" pad " y" ry " w" (overlayWidth - pad * 2) " h" rowHeight
+            " +0x200 Left Background" bg " c" fg,
+            "  " ShortTitle(item.title, 55))
+        row.SetFont("s" g_ThemeFontSize " c" fg, g_ThemeFontNameTab)
+        row.tabSwitcherIdx := i
+        row.OnEvent("Click", SwitcherCardClick)
+        g_SwitcherCards.Push(row)
     }
 
     g_SwitcherGui.OnEvent("Close", (*) => SwitcherClose())
-    g_SwitcherGui.Show("x" ox " y" oy " w" oW " h" oH)
+    g_SwitcherGui.Show("x" ox " y" oy " w" overlayWidth " h" overlayHeight)
     DllCall("dwmapi.dll\DwmSetWindowAttribute",
         "ptr", g_SwitcherGui.Hwnd, "uint", 33, "uint*", 2, "uint", 4)
 
@@ -661,15 +683,15 @@ SwitcherRefreshCards() {
     selTabIdx := (g_SwitcherSelVisIdx >= 1 && g_SwitcherSelVisIdx <= g_SwitcherVisible.Length)
         ? g_SwitcherVisible[g_SwitcherSelVisIdx] : 0
 
-    for idx, card in g_SwitcherCards {
+    for idx, row in g_SwitcherCards {
         isVis := visSet.Has(idx)
         isSel := (idx = selTabIdx)
-        card.Visible := isVis
+        row.Visible := isVis
         if isVis {
             bg := isSel ? g_ThemeTabActiveBg : g_ThemeTabInactiveBg
             fg := isSel ? g_ThemeTabActiveText : g_ThemeTabInactiveText
-            card.Opt("Background" bg " c" fg)
-            card.SetFont("s" g_ThemeFontSize " c" fg, g_ThemeFontNameTab)
+            row.Opt("Background" bg " c" fg)
+            row.SetFont("s" g_ThemeFontSize " c" fg, g_ThemeFontNameTab)
         }
     }
 }
@@ -705,7 +727,6 @@ SwitcherOnKeyDown(wParam, lParam, msg, hwnd) {
         if parent != g_SwitcherGui.Hwnd
             return
     }
-    cols  := Min(4, g_SwitcherAllTabs.Length)
     count := g_SwitcherVisible.Length
     if wParam = 0x1B {
         SwitcherClose()
@@ -729,12 +750,12 @@ SwitcherOnKeyDown(wParam, lParam, msg, hwnd) {
         return 0
     }
     if wParam = 0x26 {
-        g_SwitcherSelVisIdx := Max(1, g_SwitcherSelVisIdx - cols)
+        g_SwitcherSelVisIdx := Max(1, g_SwitcherSelVisIdx - 1)
         SwitcherRefreshCards()
         return 0
     }
     if wParam = 0x28 {
-        g_SwitcherSelVisIdx := Min(count, g_SwitcherSelVisIdx + cols)
+        g_SwitcherSelVisIdx := Min(count, g_SwitcherSelVisIdx + 1)
         SwitcherRefreshCards()
         return 0
     }
@@ -1291,8 +1312,10 @@ WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsE
 
 ; Shell hook: when a new window is created, try to add it as a tab if it matches.
 OnWindowCreated(hwnd) {
-    global g_MainHost, g_PendingCandidates, g_IsCleaningUp
+    global g_MainHost, g_PendingCandidates, g_IsCleaningUp, g_SwitcherGui
     if !g_MainHost || g_IsCleaningUp
+        return
+    if IsSet(g_SwitcherGui) && g_SwitcherGui && hwnd = g_SwitcherGui.Hwnd
         return
     ; Fast HWND check before the expensive candidate build (which walks all descendants).
     ; Covers NAMECHANGE events on already-tracked tabs whose title changed.
@@ -2120,9 +2143,9 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
     } finally {
     if host.hwnd && IsWindowExists(host.hwnd) {
         prev := DetectHiddenWindows(true)
-        try SendMessage(0x000B, 1, 0,, "ahk_id " host.hwnd)
+        try SendMessage(0x000B, 1, 0,, "ahk_id " host.hwnd)  ; always re-enable
         DetectHiddenWindows(prev)
-        DllCall("RedrawWindow", "Ptr", host.hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0085)
+        try DllCall("RedrawWindow", "Ptr", host.hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0085)
     }
         host.isLayingOut := false
     }
