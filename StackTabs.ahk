@@ -58,6 +58,7 @@ Config := {
     TabCornerRadius: 5,
     ActiveTabStyle: "full",  ; "full" = active tab has different bg; "indicator" = only indicator strip, same bg as inactive
     ShowOnlyWhenTabs: true,  ; when true, show host only when 1+ tabs; hide to tray when 0 (default). Set to 0 to always show host.
+    BumpOnChildDialog: false,  ; Bring host forward when embedded app opens a dialog
 
     ; === THEME (loaded from themes\ folder; dark.ini is the default and fallback) ===
     ThemeTabIndicatorColor: "",   ; set by LoadThemeFromFile; defaults to TabActiveBg
@@ -149,6 +150,7 @@ LoadConfigFromIni() {
         Config.WatchdogMaxMs := Integer(IniRead(iniPath, "General", "WatchdogMaxMs", Config.WatchdogMaxMs))
         Config.TabDisappearGraceMs := Integer(IniRead(iniPath, "General", "TabDisappearGraceMs", Config.TabDisappearGraceMs))
         Config.DebugDiscovery := (IniRead(iniPath, "General", "DebugDiscovery", "0") = "1")
+        Config.BumpOnChildDialog := (IniRead(iniPath, "General", "BumpOnChildDialog", "0") = "1")
         Config.HostTitle := IniRead(iniPath, "Layout", "HostTitle", Config.HostTitle)
         Config.HostWidth := Integer(IniRead(iniPath, "Layout", "HostWidth", Config.HostWidth))
         Config.HostHeight := Integer(IniRead(iniPath, "Layout", "HostHeight", Config.HostHeight))
@@ -1302,6 +1304,27 @@ WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsE
             }
         }
     }
+    ; Bump host forward when embedded app opens a dialog (e.g. modal), if enabled.
+    ; Only on SHOW (0x8002): NAMECHANGE/UNCLOAK must not trigger bump. Match on PID
+    ; (not processName) so multiple instances of same exe don't bump the wrong host.
+    ; After bump, return to avoid OnWindowCreated trying to embed the dialog as a tab.
+    if (event = 0x8002) && Config.BumpOnChildDialog {
+        try {
+            newPid := WinGetPID("ahk_id " hwnd)
+            if newPid != "" {
+                for host in GetAllHosts() {
+                    for tabId, record in host.tabRecords {
+                        if (record.pid = newPid
+                            && record.topHwnd != hwnd
+                            && record.contentHwnd != hwnd) {
+                            BumpHostToFront(host)
+                            return
+                        }
+                    }
+                }
+            }
+        }
+    }
     OnWindowCreated(hwnd)
 }
 
@@ -1566,6 +1589,7 @@ BuildCandidateFromTopWindow(topHwnd) {
             return ""
 
         processName := WinGetProcessName("ahk_id " topHwnd)
+        pid := WinGetPID("ahk_id " topHwnd)
         ; Exclude processes that crash or misbehave when reparented (e.g. explorer.exe)
         if StrLower(processName) = "explorer.exe"
             return ""
@@ -1586,6 +1610,7 @@ BuildCandidateFromTopWindow(topHwnd) {
             topHwnd: topHwnd,
             contentHwnd: contentHwnd,
             processName: processName,
+            pid: pid,
             rootOwner: GetRootOwner(topHwnd),
             hierarchySummary: Config.DebugDiscovery ? DescribeWindowHierarchy(topHwnd, contentHwnd) : ""
         }
@@ -1799,6 +1824,7 @@ BuildTrackedRecord(candidate) {
         topHwnd: candidate.topHwnd,
         contentHwnd: candidate.contentHwnd,
         processName: candidate.processName,
+        pid: candidate.pid,
         rootOwner: candidate.rootOwner,
         originalContentParent: parentHwnd,
         originalContentOwner: GetWindowLongPtrValue(candidate.contentHwnd, -8),
@@ -1823,6 +1849,7 @@ UpdateTrackedTab(host, tabId, candidate) {
     record.title := candidate.title
     UpdateRecordTitleCache(record)
     record.processName := candidate.processName
+    record.pid := candidate.pid
     record.rootOwner := candidate.rootOwner
 
     if (record.topHwnd != candidate.topHwnd || record.contentHwnd != candidate.contentHwnd) {
@@ -2800,6 +2827,26 @@ GetPreferredTabTitle(record) {
     if title != ""
         return title
     return SafeWinGetTitle(record.contentHwnd)
+}
+
+; Briefly sets host to topmost then drops back to normal z-order.
+; This repositions the host above the app's dialogs without making it
+; permanently always-on-top. Uses SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+; so the window is not moved, resized, or focused.
+BumpHostToFront(host) {
+    if !host || !host.hwnd || !IsWindowExists(host.hwnd)
+        return
+    SWP_FLAGS := 0x0013  ; SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+    ; Step 1: set topmost (brings above all non-topmost windows)
+    DllCall("SetWindowPos", "ptr", host.hwnd,
+        "ptr", -1,       ; HWND_TOPMOST
+        "int", 0, "int", 0, "int", 0, "int", 0,
+        "uint", SWP_FLAGS)
+    ; Step 2: immediately drop topmost so it won't float above unrelated apps
+    DllCall("SetWindowPos", "ptr", host.hwnd,
+        "ptr", -2,       ; HWND_NOTOPMOST
+        "int", 0, "int", 0, "int", 0, "int", 0,
+        "uint", SWP_FLAGS)
 }
 
 ; Forces window to redraw (invalidates and updates).
