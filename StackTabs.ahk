@@ -83,6 +83,10 @@ g_TabTitleAlignH      := "center"
 g_TabTitleAlignV      := "center"
 ; When true, tab titles are prefixed with their 1-based position: "1. Title", "2. Title", etc.
 g_ShowTabNumbers      := false
+g_ShowCloseButton     := true
+g_ShowPopoutButton    := true
+g_TabSeparatorWidth   := 0
+g_ThemeTabSeparatorColor := ""
 
 ; Loads config.ini into globals; migrates from StackTabs.ini if needed.
 LoadConfigFromIni() {
@@ -133,9 +137,12 @@ LoadConfigFromIni() {
         g_TabTitleAlignH := Trim(StrSplit(IniRead(iniPath, "Layout", "TabTitleAlignH", g_TabTitleAlignH), ";")[1])
         g_TabTitleAlignV := Trim(StrSplit(IniRead(iniPath, "Layout", "TabTitleAlignV", g_TabTitleAlignV), ";")[1])
         g_ShowTabNumbers := (Trim(StrSplit(IniRead(iniPath, "Layout", "ShowTabNumbers", "0"), ";")[1]) = "1")
+        g_ShowCloseButton := (Trim(StrSplit(IniRead(iniPath, "Layout", "ShowCloseButton", "1"), ";")[1]) = "1")
+        g_ShowPopoutButton := (Trim(StrSplit(IniRead(iniPath, "Layout", "ShowPopoutButton", "1"), ";")[1]) = "1")
         g_TabPosition := IniRead(iniPath, "Layout", "TabPosition", "top")
         g_TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", "3"))
         g_TabCornerRadius := Integer(IniRead(iniPath, "Layout", "TabCornerRadius", "5"))
+        g_TabSeparatorWidth := Integer(IniRead(iniPath, "Layout", "TabSeparatorWidth", "0"))
         g_ActiveTabStyle := Trim(IniRead(iniPath, "Layout", "ActiveTabStyle", "full"))
         ; ShowOnlyWhenTabs: show host only when 1+ tabs; hide to tray when 0 (default). Fallback for old config keys.
         rawVal := IniRead(iniPath, "Layout", "ShowOnlyWhenTabs", IniRead(iniPath, "Layout", "KeepHostAlive", IniRead(iniPath, "Layout", "HideHostWhenEmpty", "1")))
@@ -179,8 +186,9 @@ LoadThemeFromFile(themePath) {
     global g_ThemeContentBorder, g_ThemeWindowText, g_ThemeFontName, g_ThemeFontNameTab
     global g_ThemeFontSize, g_ThemeIconFont, g_ThemeIconFontSize
     global g_HostPadding, g_HostPaddingBottom, g_HeaderHeight, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabHeight
-    global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarAlignment, g_TabBarOffsetY, g_TabPosition, g_TabIndicatorHeight, g_TabCornerRadius
+    global g_CloseButtonWidth, g_PopoutButtonWidth, g_TabBarAlignment, g_TabBarOffsetY, g_TabPosition, g_TabIndicatorHeight, g_TabCornerRadius, g_TabSeparatorWidth
     global g_ActiveTabStyle, g_TabMaxLines, g_TabTitleMaxLen, g_TabTitleAlignH, g_TabTitleAlignV, g_ShowTabNumbers
+    global g_ShowCloseButton, g_ShowPopoutButton
     ; Fall back to dark.ini if the requested theme file doesn't exist
     if !FileExist(themePath)
         themePath := g_ThemesDir "\dark.ini"
@@ -220,6 +228,8 @@ LoadThemeFromFile(themePath) {
         g_TabBarOffsetY := Integer(rawOffset)
     g_TabIndicatorHeight := Integer(IniRead(themePath, "Layout", "TabIndicatorHeight", String(g_TabIndicatorHeight)))
     g_TabCornerRadius := Integer(IniRead(themePath, "Layout", "TabCornerRadius", String(g_TabCornerRadius)))
+    g_TabSeparatorWidth := Integer(IniRead(themePath, "Layout", "TabSeparatorWidth", String(g_TabSeparatorWidth)))
+    g_ThemeTabSeparatorColor := IniRead(themePath, "Theme", "TabSeparatorColor", "")
     ; TabPosition: when theme doesn't specify, read from config (not g_TabPosition) so we don't carry over
     ; the previous theme's value when switching themes
     rawPos := IniRead(themePath, "Layout", "TabPosition", "")
@@ -259,6 +269,26 @@ LoadThemeFromFile(themePath) {
         cfgVal := IniRead(g_ConfigPath, "Layout", "ShowTabNumbers", "0")
         parts := StrSplit(cfgVal, ";")
         g_ShowTabNumbers := (parts.Length && Trim(parts[1]) = "1")
+    }
+    rawShowClose := IniRead(themePath, "Layout", "ShowCloseButton", "")
+    if rawShowClose != "" {
+        parts := StrSplit(rawShowClose, ";")
+        if parts.Length
+            g_ShowCloseButton := (Trim(parts[1]) = "1")
+    } else {
+        cfgVal := IniRead(g_ConfigPath, "Layout", "ShowCloseButton", "1")
+        parts := StrSplit(cfgVal, ";")
+        g_ShowCloseButton := (parts.Length && Trim(parts[1]) = "1")
+    }
+    rawShowPopout := IniRead(themePath, "Layout", "ShowPopoutButton", "")
+    if rawShowPopout != "" {
+        parts := StrSplit(rawShowPopout, ";")
+        if parts.Length
+            g_ShowPopoutButton := (Trim(parts[1]) = "1")
+    } else {
+        cfgVal := IniRead(g_ConfigPath, "Layout", "ShowPopoutButton", "1")
+        parts := StrSplit(cfgVal, ";")
+        g_ShowPopoutButton := (parts.Length && Trim(parts[1]) = "1")
     }
 }
 
@@ -795,6 +825,10 @@ TitleBarCloseClick(host, *) {
                 g_PopoutHosts.RemoveAt(i)
                 break
             }
+        }
+        if host.HasProp("iconHandle") && host.iconHandle {
+            DllCall("DestroyIcon", "ptr", host.iconHandle)
+            host.iconHandle := 0
         }
         host.gui.Destroy()
     } else {
@@ -1679,10 +1713,12 @@ DuplicateConfirmDialog(shortTitle) {
     Hotkey("n", fnN, "On")
     Hotkey("N", fnN, "On")
 
-    while IsWindowExists(dlgHwnd)
-        Sleep(50)
-
-    cleanup()
+    try {
+        while IsWindowExists(dlgHwnd)
+            Sleep(50)
+    } finally {
+        cleanup()
+    }
     return result = "" ? "No" : result
 }
 
@@ -1887,7 +1923,7 @@ AttachTrackedWindow(host, tabId) {
     if host.hwnd && IsWindowExists(host.hwnd)
         DllCall("SetForegroundWindow", "ptr", host.hwnd)
 
-    SendMessage(0x000B, 0, 0,, "ahk_id " hwnd)  ; WM_SETREDRAW FALSE
+    try SendMessage(0x000B, 0, 0,, "ahk_id " hwnd,,,, 500)  ; WM_SETREDRAW FALSE
 
     if (record.topHwnd != hwnd) && IsWindowExists(record.topHwnd) {
         record.sourceWasHidden := true
@@ -1917,7 +1953,7 @@ AttachTrackedWindow(host, tabId) {
         SetWindowLongPtrValue(hwnd, -16, record.originalContentStyle)
         SetWindowLongPtrValue(hwnd, -20, record.originalContentExStyle)
         AppendDebugLog("AttachTrackedWindow: SetParent failed for hwnd=" hwnd " tabId=" tabId "`r`n", true)
-        SendMessage(0x000B, 1, 0,, "ahk_id " hwnd)  ; WM_SETREDRAW TRUE (re-enable drawing)
+        SendMessage(0x000B, 1, 0,, "ahk_id " hwnd,,,, 500)  ; WM_SETREDRAW TRUE (re-enable drawing)
         return false
     }
 
@@ -1929,7 +1965,7 @@ AttachTrackedWindow(host, tabId) {
     areaH -= 2
     flags := SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE
     DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", areaX, "int", areaY, "int", areaW, "int", areaH, "uint", flags)
-    SendMessage(0x000B, 1, 0,, "ahk_id " hwnd)  ; WM_SETREDRAW TRUE
+    try SendMessage(0x000B, 1, 0,, "ahk_id " hwnd,,,, 500)  ; WM_SETREDRAW TRUE
     DllCall("ShowWindow", "ptr", hwnd, "int", SW_HIDE)
     return true
 }
@@ -2347,15 +2383,18 @@ ShowOnlyActiveTab(host) {
 }
 
 DrawTabBar(host) {
-    global g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabCornerRadius
+    global g_HostPadding, g_TabGap, g_MinTabWidth, g_MaxTabWidth, g_TabCornerRadius, g_TabSeparatorWidth
     global g_HeaderHeight, g_TabHeight, g_CloseButtonWidth, g_PopoutButtonWidth
     global g_TabBarAlignment, g_TabBarOffsetY, g_TabIndicatorHeight
     global g_TabPosition, g_UseCustomTitleBar, g_TitleBarHeight
     global g_ThemeTabBarBg, g_ThemeTabActiveBg, g_ThemeTabActiveText
     global g_ThemeTabInactiveBg, g_ThemeTabInactiveBgHover, g_ThemeTabInactiveText
-    global g_ThemeTabIndicatorColor, g_ThemeIconFont, g_ThemeIconFontSize
-    global g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeIconColor, g_ShowTabNumbers
+    global g_ThemeTabIndicatorColor, g_ThemeTabSeparatorColor, g_ThemeContentBorder, g_ThemeIconFont, g_ThemeIconFontSize
+    global g_ThemeFontNameTab, g_ThemeFontSize, g_ThemeIconColor, g_ShowTabNumbers, g_TabTitleAlignH, g_TabTitleAlignV
     global g_IconClose, g_IconPopout, g_IconMerge
+
+    alignHVal := (g_TabTitleAlignH = "left") ? 0 : (g_TabTitleAlignH = "right") ? 2 : 1
+    alignVVal := (g_TabTitleAlignV = "top") ? 0 : (g_TabTitleAlignV = "bottom") ? 2 : 1
 
     if !host.HasProp("tabCanvas") || !host.tabCanvas
         return
@@ -2376,6 +2415,14 @@ DrawTabBar(host) {
     host.tabCanvas.Move(0, tabBarY, tabBarW, tabBarH)
 
     GdipCreateOffscreenBitmap(tabBarW, tabBarH, &pBitmap, &pGraphics)
+    if !pBitmap || !pGraphics {
+        if pGraphics
+            DllCall("gdiplus\GdipDeleteGraphics", "UPtr", pGraphics)
+        if pBitmap
+            DllCall("gdiplus\GdipDisposeImage", "UPtr", pBitmap)
+        SetTimer(() => DrawTabBar(host), -16)
+        return
+    }
 
     ; Fill background
     pBgBrush := 0
@@ -2398,7 +2445,9 @@ DrawTabBar(host) {
     ; Overflow: if tabs exceed available width, switch to scroll mode
     totalW := tabCount * tabWidth + (tabCount - 1) * g_TabGap
     needScroll := totalW > usableWidth
-    titleWidth := tabWidth - g_CloseButtonWidth - g_PopoutButtonWidth
+    effectivePopoutW := g_ShowPopoutButton ? g_PopoutButtonWidth : 0
+    effectiveCloseW  := g_ShowCloseButton  ? g_CloseButtonWidth  : 0
+    titleWidth := tabWidth - effectivePopoutW - effectiveCloseW
 
     ; Clamp scroll offset and compute how many tabs fit
     if needScroll {
@@ -2466,21 +2515,44 @@ DrawTabBar(host) {
             rawTitle := i ". " rawTitle
         GdipDrawStringSimple(pGraphics, rawTitle,
             x, tabOffsetY, titleWidth, g_TabHeight,
-            fgColor, g_ThemeFontNameTab, g_ThemeFontSize, isActive)
+            fgColor, g_ThemeFontNameTab, g_ThemeFontSize, isActive,
+            true, true, alignHVal, alignVVal)
 
-        ; Popout / merge icon
-        iconText := host.isPopout ? g_IconMerge : g_IconPopout
-        GdipDrawStringSimple(pGraphics, iconText,
-            x + titleWidth, tabOffsetY, g_PopoutButtonWidth, g_TabHeight,
-            iconColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
+        ; Popout / merge icon (only drawn if ShowPopoutButton)
+        if g_ShowPopoutButton {
+            iconText := host.isPopout ? g_IconMerge : g_IconPopout
+            GdipDrawStringSimple(pGraphics, iconText,
+                x + titleWidth, tabOffsetY, g_PopoutButtonWidth, g_TabHeight,
+                iconColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
+        }
 
-        ; Close icon
-        GdipDrawStringSimple(pGraphics, g_IconClose,
-            x + titleWidth + g_PopoutButtonWidth, tabOffsetY,
-            g_CloseButtonWidth, g_TabHeight,
-            iconColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
+        ; Close icon (only drawn if ShowCloseButton)
+        if g_ShowCloseButton {
+            GdipDrawStringSimple(pGraphics, g_IconClose,
+                x + titleWidth + g_PopoutButtonWidth, tabOffsetY,
+                g_CloseButtonWidth, g_TabHeight,
+                iconColor, g_ThemeIconFont, g_ThemeIconFontSize, false)
+        }
 
         x += tabWidth + g_TabGap
+    }
+
+    ; Vertical separators between tabs
+    if g_TabSeparatorWidth > 0 {
+        sepColor := g_ThemeTabSeparatorColor != "" ? HexToARGB(g_ThemeTabSeparatorColor) : HexToARGB(g_ThemeContentBorder)
+        pSepBrush := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", sepColor, "UPtr*", &pSepBrush)
+        sepX := needScroll ? g_HostPadding + arrowW : g_HostPadding
+        for i, tabId in host.tabOrder {
+            if needScroll && (i < drawStart || i > drawEnd)
+                continue
+            if (needScroll ? i < drawEnd : i < tabCount) {
+                DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pSepBrush,
+                    "Int", sepX + tabWidth, "Int", tabOffsetY, "Int", g_TabSeparatorWidth, "Int", g_TabHeight)
+            }
+            sepX += tabWidth + g_TabGap
+        }
+        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pSepBrush)
     }
 
     ; Draw left scroll arrow only when can scroll left (tabScrollOffset > 0)
@@ -2594,8 +2666,9 @@ CleanupAll(*) {
     for _, pFont in g_CachedFont
         DllCall("gdiplus\GdipDeleteFont", "UPtr", pFont)
     g_CachedFont := Map()
-    if g_CachedStringFormat {
-        DllCall("gdiplus\GdipDeleteStringFormat", "UPtr", g_CachedStringFormat)
+    if IsObject(g_CachedStringFormat) {
+        for _, pFmt in g_CachedStringFormat
+            DllCall("gdiplus\GdipDeleteStringFormat", "UPtr", pFmt)
         g_CachedStringFormat := 0
     }
     if g_GdipToken {
@@ -3028,7 +3101,9 @@ GetTabZoneAtMouseX(host, mouseX, tabIdx) {
     startX   := needScroll ? g_HostPadding + arrowW : g_HostPadding
     startIdx := needScroll ? host.tabScrollOffset + 1 : 1
     slotX := startX + (tabIdx - startIdx) * (tabWidth + g_TabGap)
-    titleWidth := tabWidth - g_CloseButtonWidth - g_PopoutButtonWidth
+    effectivePopoutW := g_ShowPopoutButton ? g_PopoutButtonWidth : 0
+    effectiveCloseW  := g_ShowCloseButton  ? g_CloseButtonWidth  : 0
+    titleWidth := tabWidth - effectiveCloseW - effectivePopoutW
     if mouseX < slotX + titleWidth
         return "title"
     if mouseX < slotX + titleWidth + g_PopoutButtonWidth
@@ -3294,7 +3369,7 @@ GdipFillRoundRect(pGraphics, x, y, w, h, radius, argbColor) {
     DllCall("gdiplus\GdipDeletePath", "UPtr", pPath)
 }
 
-GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fontSize, bold) {
+GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fontSize, bold, noWrap := true, ellipsis := true, alignH := 1, alignV := 1) {
     global g_CachedFontFamily, g_CachedFont, g_CachedStringFormat
 
     ; Build cache keys
@@ -3324,15 +3399,22 @@ GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fon
     }
     pFont := g_CachedFont[fontKey]
 
-    ; Create or reuse string format (alignment is set per-call, format is stateless for center/center)
-    if !g_CachedStringFormat {
+    ; GDI+ StringAlignment: 0=Near/left, 1=Center, 2=Far/right
+    fmtKey := (noWrap ? "1" : "0") "|" (ellipsis ? "1" : "0") "|" alignH "|" alignV
+    if !g_CachedStringFormat || !g_CachedStringFormat.Has(fmtKey) {
+        if !IsObject(g_CachedStringFormat)
+            g_CachedStringFormat := Map()
         pFormat := 0
         DllCall("gdiplus\GdipCreateStringFormat", "Int", 0, "Int", 0, "UPtr*", &pFormat)
         if !pFormat
             return
-        DllCall("gdiplus\GdipSetStringFormatAlign", "UPtr", pFormat, "Int", 1)
-        DllCall("gdiplus\GdipSetStringFormatLineAlign", "UPtr", pFormat, "Int", 1)
-        g_CachedStringFormat := pFormat
+        DllCall("gdiplus\GdipSetStringFormatAlign", "UPtr", pFormat, "Int", alignH)
+        DllCall("gdiplus\GdipSetStringFormatLineAlign", "UPtr", pFormat, "Int", alignV)
+        if noWrap
+            DllCall("gdiplus\GdipSetStringFormatFlags", "UPtr", pFormat, "Int", 0x00001000)
+        if ellipsis
+            DllCall("gdiplus\GdipSetStringFormatTrimming", "UPtr", pFormat, "Int", 5)
+        g_CachedStringFormat[fmtKey] := pFormat
     }
 
     pBrush := 0
@@ -3348,7 +3430,7 @@ GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fon
 
     DllCall("gdiplus\GdipDrawString",
         "UPtr", pGraphics, "Str", text, "Int", -1,
-        "UPtr", pFont, "Ptr", rect, "UPtr", g_CachedStringFormat, "UPtr", pBrush)
+        "UPtr", pFont, "Ptr", rect, "UPtr", g_CachedStringFormat[fmtKey], "UPtr", pBrush)
 
     DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
 }
