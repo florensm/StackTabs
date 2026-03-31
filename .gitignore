@@ -1,6 +1,7 @@
 # User config (copy config.ini.example to config.ini to get started)
 config.ini
 session.ini
+new-ticket.ini
 
 # Debug / generated files
 discovery.txt

@@ -6,12 +6,15 @@
 
 [General]
 ; --- Window matching ---
-; Match1/Match2/... = window title patterns. A window must contain at least one to be captured.
+; Match1/Match2/... = window title substrings. A window must contain at least one to be captured.
+; Special: Match=""  captures windows with an empty or whitespace-only title.
+;          Always combine with TargetExe= when using "" to avoid grabbing every untitled window.
 Match1=PowerShell
 ; Match2=Notepad
 ; Match3=Visual Studio Code
+; Match4=""          ; captures untitled windows (pair with TargetExe)
 
-; Optional: limit to a specific process name (e.g. pwsh.exe). Leave empty to match any.
+; Optional: limit to a specific process (e.g. pwsh.exe). Leave empty to match any process.
 TargetExe=
 
 ; --- Timing (all in milliseconds) ---
@@ -22,6 +25,7 @@ WatchdogMaxMs=1500          ; Max wait for hung windows before giving up.
 TabDisappearGraceMs=300     ; Grace period before removing a tab whose window closed.
 
 ; DebugDiscovery=0          ; Set to 1 to log window discovery events (Win+Shift+D to dump).
+; BumpOnChildDialog=0       ; Set to 1 to bring StackTabs forward when an embedded app opens a dialog.
 
 [Layout]
 ; --- Host window ---
@@ -63,8 +67,8 @@ TitleBarHeight=28           ; Height of the custom title bar (only relevant when
 
 [Theme]
 ; Theme file from the themes\ folder.
-; Available themes: dark.ini, light.ini, spacious.ini, compact.ini, spacious-dark.ini,
-;   bottom-tabs.ini, high-contrast.ini, minimal.ini, numbered.ini
+; Available: dark.ini, light.ini, spacious.ini, spacious-dark.ini, compact.ini,
+;            bottom-tabs.ini, high-contrast.ini, minimal.ini, numbered.ini, tmux.ini
 ThemeFile=dark.ini
 
 [TitleFilters]

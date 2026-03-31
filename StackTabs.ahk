@@ -2,6 +2,7 @@
 ; AutoHotkey v2
 
 #Requires AutoHotkey v2.0
+#SingleInstance Force
 
 ; SetWindowPos / ShowWindow flags (Win32 API)
 SWP_NOACTIVATE   := 0x0010
@@ -64,9 +65,6 @@ Config := {
     ThemeTabIndicatorColor: "",   ; set by LoadThemeFromFile; defaults to TabActiveBg
     ThemeIconFont: "",   ; auto-detected at startup; override in theme file with IconFont=
     ActiveThemeFile: "dark.ini",   ; overridden by ThemeFile= in config.ini
-    UseCustomTitleBar: false,
-    TitleBarHeight: 28,
-
     ; Icon codepoints from Segoe Fluent Icons / Segoe MDL2 Assets (same PUA values)
     IconClose: Chr(0xe894),
     IconPopout: Chr(0xE8A7),
@@ -129,7 +127,9 @@ State := {
     SwitcherAllTabs: [],
     SwitcherVisible: [],
     SwitcherSelVisIdx: 0,
-    SwitcherCards: []
+    SwitcherCards: [],
+    SwitcherCtrlTabMode: false,
+    SwitcherOrigTabIdx: 0
 }
 
 ; Loads config.ini into globals; migrates from StackTabs.ini if needed.
@@ -185,8 +185,6 @@ LoadConfigFromIni() {
         rawVal := IniRead(iniPath, "Layout", "ShowOnlyWhenTabs", IniRead(iniPath, "Layout", "KeepHostAlive", IniRead(iniPath, "Layout", "HideHostWhenEmpty", "1")))
         ; Strip inline comment (; ...) and trim so "1   ; comment" parses as 1
         Config.ShowOnlyWhenTabs := (Trim(StrSplit(rawVal, ";")[1]) = "1")
-        Config.UseCustomTitleBar := (IniRead(iniPath, "Layout", "UseCustomTitleBar", "0") = "1")
-        Config.TitleBarHeight := Integer(IniRead(iniPath, "Layout", "TitleBarHeight", "28"))
     }
     ; Load match patterns from [General] Match1/Match2/...
     Config.WindowTitleMatches := []
@@ -449,17 +447,6 @@ ApplyThemeToHost(host) {
         host.contentBorderLeft.Opt("Background0x" Config.ThemeContentBorder)
         host.contentBorderRight.Opt("Background0x" Config.ThemeContentBorder)
     }
-    if host.HasProp("titleBarBg") && host.titleBarBg {
-        host.titleBarBg.Opt("Background0x" Config.ThemeTabBarBg)
-        host.titleCloseBtn.Opt("Background0x" Config.ThemeTabBarBg " c" Config.ThemeIconColor)
-        if Config.UseCustomTitleBar && host.hwnd {
-            try {
-                rgb := Integer("0x" Config.ThemeTabBarBg)
-                bgr := ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)
-                DllCall("dwmapi\DwmSetWindowAttribute", "ptr", host.hwnd, "int", 34, "uint*", &bgr, "uint", 4)
-            }
-        }
-    }
     LayoutTabButtons(host)
     ShowOnlyActiveTab(host)
     DrawTabBar(host)
@@ -480,8 +467,6 @@ if Config.WindowTitleMatches.Length = 0 {
 LoadThemeFromFile(A_ScriptDir "\themes\" Config.ActiveThemeFile)
 DetectIconFont()
 BuildTrayMenu()
-if Config.UseCustomTitleBar
-    OnMessage(0x83, OnWmNcCalcSize)
 DllCall("LoadLibrary", "Str", "gdiplus", "Ptr")
 State.GdipToken := GdiplusStartup()
 State.CachedFontFamily := Map()
@@ -527,29 +512,71 @@ RefreshWindows()
 SetTimer(RefreshWindows, Config.SlowSweepInterval)
 
 ; ============ TAB SWITCHER OVERLAY ============
-; Alt+Shift+F: floating overlay with tab cards and fuzzy search (when StackTabs is focused).
-; Type to filter. Arrow keys navigate. Enter switches. Escape closes.
+; Ctrl+Tab: open switcher and cycle forward; Ctrl+Shift+Tab cycles backward.
+; Keep Ctrl held to continue cycling; release Ctrl to commit. Escape cancels.
 
-State.SwitcherGui       := ""
-State.SwitcherAllTabs   := []
-State.SwitcherVisible   := []
-State.SwitcherSelVisIdx := 0
-State.SwitcherCards     := []
+State.SwitcherGui         := ""
+State.SwitcherAllTabs     := []
+State.SwitcherVisible     := []
+State.SwitcherSelVisIdx   := 0
+State.SwitcherCards       := []
+State.SwitcherCtrlTabMode := false   ; true = opened via Ctrl+Tab (no search box, Ctrl-release commits)
+State.SwitcherOrigTabIdx  := 0       ; all-tabs index active when switcher opened (for Escape restore)
 
-; Tab switcher: Alt+Shift+F when StackTabs host is active
+; Ctrl+Tab / Ctrl+Shift+Tab when StackTabs (or embedded content) is active
 #HotIf StackTabsHostIsActive()
-!+f:: {
-    if State.SwitcherGui {
-        SwitcherClose()
-        return
-    }
-    ; Defer by 80ms so modifiers are physically released before the GUI opens.
-    ; Without this the Edit control receives held modifiers = command mode, not typing mode.
-    SetTimer(ShowTabSwitcher, -80)
-}
+^Tab::  SwitcherCtrlTabCycle(1)
+^+Tab:: SwitcherCtrlTabCycle(-1)
 #HotIf
 
-ShowTabSwitcher() {
+; Release Ctrl to commit while switcher is open (OnMessage WM_KEYUP is unreliable for
+; modifier keys — use AHK hotkeys instead so the hook fires before the GUI sees it)
+#HotIf State.SwitcherCtrlTabMode
+LControl Up:: SwitcherCtrlRelease()
+RControl Up:: SwitcherCtrlRelease()
+#HotIf
+
+SwitcherCtrlTabCycle(dir) {
+    if State.SwitcherGui && State.SwitcherCtrlTabMode {
+        SwitcherCycleStep(dir)
+        return
+    }
+    ShowTabSwitcher(true, dir)
+}
+
+SwitcherCycleStep(dir) {
+    count := State.SwitcherVisible.Length
+    if count = 0
+        return
+    n := Mod(State.SwitcherSelVisIdx - 1 + dir + count * 2, count)
+    State.SwitcherSelVisIdx := n + 1
+    SwitcherRefreshCards()
+    SwitcherPreviewSelected()
+}
+
+; Switch tab content + update tab bar without stealing keyboard focus from the switcher.
+SwitcherPreviewSelected() {
+    if !State.SwitcherGui
+        return
+    count := State.SwitcherVisible.Length
+    if State.SwitcherSelVisIdx < 1 || State.SwitcherSelVisIdx > count
+        return
+    tabIdx := State.SwitcherVisible[State.SwitcherSelVisIdx]
+    if tabIdx < 1 || tabIdx > State.SwitcherAllTabs.Length
+        return
+    item := State.SwitcherAllTabs[tabIdx]
+    if !item.host.tabRecords.Has(item.tabId)
+        return  ; tab was closed while switcher was open
+    record := item.host.tabRecords[item.tabId]
+    contentHwnd := record.contentHwnd
+    if !IsWindowExists(contentHwnd)
+        return
+    item.host.activeTabId := item.tabId
+    ShowOnlyActiveTab(item.host)
+    UpdateHostTitle(item.host)
+}
+
+ShowTabSwitcher(ctrlTabMode := false, dir := 1) {
     if State.SwitcherGui {
         SwitcherClose()
         return
@@ -569,27 +596,49 @@ ShowTabSwitcher() {
     }
     if allTabs.Length = 0
         return
+    if ctrlTabMode && allTabs.Length = 1
+        return  ; nothing to cycle — skip overlay
 
-    State.SwitcherAllTabs   := allTabs
-    State.SwitcherVisible   := []
-    State.SwitcherSelVisIdx := 1
+    State.SwitcherCtrlTabMode := ctrlTabMode
+    State.SwitcherAllTabs     := allTabs
+    State.SwitcherVisible     := []
+    State.SwitcherSelVisIdx   := 1
     Loop allTabs.Length
         State.SwitcherVisible.Push(A_Index)
+
+    ; Find the currently active tab index
+    origIdx := 1
     for idx, item in allTabs {
         if item.isActive {
-            State.SwitcherSelVisIdx := idx
+            origIdx := idx
             break
         }
     }
+    State.SwitcherOrigTabIdx := origIdx
+
+    if ctrlTabMode {
+        ; Start selection on the next/prev tab relative to the active one
+        count := allTabs.Length
+        State.SwitcherSelVisIdx := Mod(origIdx - 1 + dir + count * 2, count) + 1
+    } else {
+        State.SwitcherSelVisIdx := origIdx
+    }
 
     ; Layout — vertical list (command-palette style)
-    overlayWidth   := 420
-    rowHeight      := 36
-    searchBarHeight := 38
-    pad            := 16
-    listGap        := 8
-    listAreaHeight := Min(allTabs.Length * rowHeight, 600)
-    overlayHeight  := pad + searchBarHeight + listGap + listAreaHeight + pad
+    overlayWidth    := 420
+    rowHeight       := 36
+    pad             := 16
+    listAreaHeight  := Min(allTabs.Length * rowHeight, 600)
+
+    if ctrlTabMode {
+        listAreaY     := pad
+        overlayHeight := pad + listAreaHeight + pad
+    } else {
+        searchBarHeight := 38
+        listGap       := 8
+        listAreaY     := pad + searchBarHeight + listGap
+        overlayHeight := pad + searchBarHeight + listGap + listAreaHeight + pad
+    }
 
     ; Position: center on StackTabs host window, fallback to screen center
     switcherHost := GetActiveStackTabsHost()
@@ -613,14 +662,14 @@ ShowTabSwitcher() {
     State.SwitcherGui.MarginY    := 0
     State.SwitcherCards := []
 
-    ; Search box — cue-banner text via EM_SETCUEBANNER after show
-    State.SwitcherGui.SetFont("s" (Config.ThemeFontSize + 1) " c" Config.ThemeWindowText, Config.ThemeFontName)
-    searchBox := State.SwitcherGui.Add("Edit",
-        "x" pad " y" pad " w" (overlayWidth - pad * 2) " h" searchBarHeight
-        " Background" Config.ThemeTabBarBg " c" Config.ThemeWindowText, "")
-    searchBox.SetFont("s" (Config.ThemeFontSize + 1) " c" Config.ThemeWindowText, Config.ThemeFontName)
-
-    listAreaY := pad + searchBarHeight + listGap
+    if !ctrlTabMode {
+        ; Search box — cue-banner text via EM_SETCUEBANNER after show
+        State.SwitcherGui.SetFont("s" (Config.ThemeFontSize + 1) " c" Config.ThemeWindowText, Config.ThemeFontName)
+        searchBox := State.SwitcherGui.Add("Edit",
+            "x" pad " y" pad " w" (overlayWidth - pad * 2) " h" searchBarHeight
+            " Background" Config.ThemeTabBarBg " c" Config.ThemeWindowText, "")
+        searchBox.SetFont("s" (Config.ThemeFontSize + 1) " c" Config.ThemeWindowText, Config.ThemeFontName)
+    }
 
     Loop allTabs.Length {
         i    := A_Index
@@ -641,21 +690,30 @@ ShowTabSwitcher() {
     }
 
     State.SwitcherGui.OnEvent("Close", (*) => SwitcherClose())
+    switcherHwnd := State.SwitcherGui.Hwnd
     State.SwitcherGui.Show("x" ox " y" oy " w" overlayWidth " h" overlayHeight)
+    if !IsObject(State.SwitcherGui)
+        return
     DllCall("dwmapi.dll\DwmSetWindowAttribute",
-        "ptr", State.SwitcherGui.Hwnd, "uint", 33, "uint*", 2, "uint", 4)
+        "ptr", switcherHwnd, "uint", 33, "uint*", 2, "uint", 4)
 
-    ; Cue banner "Search tabs..." inside the edit box
-    SendMessage(0x1501, 1, StrPtr("Search tabs..."),, "ahk_id " searchBox.Hwnd)
-
-    searchBox.OnEvent("Change", SwitcherOnSearch)
     OnMessage(0x0100, SwitcherOnKeyDown, 1)
-    WinActivate("ahk_id " State.SwitcherGui.Hwnd)
-    searchBox.Focus()
+    if ctrlTabMode {
+        SwitcherPreviewSelected()   ; immediately show the pre-selected tab
+        WinActivate("ahk_id " switcherHwnd)
+    } else {
+        ; Cue banner "Search tabs..." inside the edit box
+        SendMessage(0x1501, 1, StrPtr("Search tabs..."),, "ahk_id " searchBox.Hwnd)
+        searchBox.OnEvent("Change", SwitcherOnSearch)
+        WinActivate("ahk_id " switcherHwnd)
+        searchBox.Focus()
+    }
 }
 
 SwitcherClose() {
     OnMessage(0x0100, SwitcherOnKeyDown, 0)
+    State.SwitcherCtrlTabMode := false
+    State.SwitcherOrigTabIdx  := 0
     if State.SwitcherGui {
         State.SwitcherGui.Destroy()
         State.SwitcherGui := ""
@@ -700,23 +758,29 @@ SwitcherRefreshCards() {
 }
 
 SwitcherCardClick(ctrl, *) {
-    idx := ctrl.tabSwitcherIdx
-    for _, tabIdx in State.SwitcherVisible {
-        if tabIdx = idx {
-            SwitcherActivate(tabIdx)
-            return
-        }
-    }
+    ; Invisible cards can't receive clicks, so no visibility check needed
+    SwitcherActivate(ctrl.tabSwitcherIdx)
 }
 
 SwitcherActivate(tabIdx) {
     if tabIdx < 1 || tabIdx > State.SwitcherAllTabs.Length
         return
     item := State.SwitcherAllTabs[tabIdx]
-    SwitcherClose()
-    SelectTab(item.host, item.tabId)
+    ; Activate the host BEFORE destroying the overlay. The overlay is +AlwaysOnTop so it
+    ; stays visible while the host renders underneath — when the overlay is destroyed last
+    ; the host is already fully painted, eliminating the flash on close.
+    if item.host.activeTabId = item.tabId && item.host.tabRecords.Has(item.tabId) {
+        contentHwnd := item.host.tabRecords[item.tabId].contentHwnd
+        if IsWindowExists(contentHwnd)
+            FocusEmbeddedContent(item.host.hwnd, contentHwnd)
+        else
+            SelectTab(item.host, item.tabId)
+    } else {
+        SelectTab(item.host, item.tabId)
+    }
     if item.host.hwnd && IsWindowExists(item.host.hwnd)
         WinActivate("ahk_id " item.host.hwnd)
+    SwitcherClose()
 }
 
 SwitcherOnKeyDown(wParam, lParam, msg, hwnd) {
@@ -728,37 +792,67 @@ SwitcherOnKeyDown(wParam, lParam, msg, hwnd) {
             return
     }
     count := State.SwitcherVisible.Length
-    if wParam = 0x1B {
-        SwitcherClose()
+    if wParam = 0x1B {  ; Escape
+        if State.SwitcherCtrlTabMode && State.SwitcherOrigTabIdx >= 1
+                && State.SwitcherOrigTabIdx <= State.SwitcherAllTabs.Length {
+            ; Restore the original tab — activate host first, destroy overlay last (no flash)
+            item := State.SwitcherAllTabs[State.SwitcherOrigTabIdx]
+            SelectTab(item.host, item.tabId)
+            if item.host.hwnd && IsWindowExists(item.host.hwnd)
+                WinActivate("ahk_id " item.host.hwnd)
+            SwitcherClose()
+        } else {
+            SwitcherClose()
+        }
         return 0
     }
     if count = 0
         return
-    if wParam = 0x0D {
+    if wParam = 0x09 && State.SwitcherCtrlTabMode {  ; Tab key — cycle while Ctrl held
+        SwitcherCycleStep(GetKeyState("Shift") ? -1 : 1)
+        return 0
+    }
+    if wParam = 0x0D {  ; Enter
         if State.SwitcherSelVisIdx >= 1 && State.SwitcherSelVisIdx <= count
             SwitcherActivate(State.SwitcherVisible[State.SwitcherSelVisIdx])
         return 0
     }
-    if wParam = 0x25 {
+    if wParam = 0x25 || wParam = 0x26 {  ; Left / Up
         State.SwitcherSelVisIdx := Max(1, State.SwitcherSelVisIdx - 1)
         SwitcherRefreshCards()
+        SwitcherPreviewSelected()
         return 0
     }
-    if wParam = 0x27 {
+    if wParam = 0x27 || wParam = 0x28 {  ; Right / Down
         State.SwitcherSelVisIdx := Min(count, State.SwitcherSelVisIdx + 1)
         SwitcherRefreshCards()
+        SwitcherPreviewSelected()
         return 0
     }
-    if wParam = 0x26 {
-        State.SwitcherSelVisIdx := Max(1, State.SwitcherSelVisIdx - 1)
-        SwitcherRefreshCards()
-        return 0
+    if State.SwitcherCtrlTabMode {  ; J/K vim keys — only in ctrl-tab mode (no search box)
+        if wParam = 0x4B {  ; K — up (wraps)
+            State.SwitcherSelVisIdx := Mod(State.SwitcherSelVisIdx - 2 + count, count) + 1
+            SwitcherRefreshCards()
+            SwitcherPreviewSelected()
+            return 0
+        }
+        if wParam = 0x4A {  ; J — down (wraps)
+            State.SwitcherSelVisIdx := Mod(State.SwitcherSelVisIdx, count) + 1
+            SwitcherRefreshCards()
+            SwitcherPreviewSelected()
+            return 0
+        }
     }
-    if wParam = 0x28 {
-        State.SwitcherSelVisIdx := Min(count, State.SwitcherSelVisIdx + 1)
-        SwitcherRefreshCards()
-        return 0
-    }
+}
+
+SwitcherCtrlRelease() {
+    if !State.SwitcherGui || !State.SwitcherCtrlTabMode
+        return
+    count := State.SwitcherVisible.Length
+    if State.SwitcherSelVisIdx >= 1 && State.SwitcherSelVisIdx <= count
+        SwitcherActivate(State.SwitcherVisible[State.SwitcherSelVisIdx])
+    else
+        SwitcherClose()
 }
 
 ; ============ HOTKEYS ============
@@ -786,16 +880,6 @@ SwitcherOnKeyDown(wParam, lParam, msg, hwnd) {
 }
 
 #HotIf StackTabsHostIsActive()
-^Tab:: {
-    host := GetActiveStackTabsHost()
-    if host
-        CycleTabs(host, 1)
-}
-^+Tab:: {
-    host := GetActiveStackTabsHost()
-    if host
-        CycleTabs(host, -1)
-}
 ^w:: {
     host := GetActiveStackTabsHost()
     if host
@@ -824,37 +908,6 @@ Loop 9 {
     Hotkey "^" A_Index, SelectTabByIndexHotkey
 }
 HotIf
-
-; Starts window drag when user clicks the custom title bar.
-TitleBarDragClick(host, *) {
-    MouseGetPos(&mx, &my)
-    lParam := (mx & 0xFFFF) | (my << 16)
-    PostMessage(0xA1, 2, lParam, , "ahk_id " host.hwnd)
-}
-
-; Closes popout host or hides main host when title bar close is clicked.
-TitleBarCloseClick(host, *) {
-    if host.isPopout {
-        InvalidateHostsCache()
-        for tabId in host.tabOrder.Clone()
-            RemoveTrackedTab(host, tabId, true)
-        for i, h in State.PopoutHosts {
-            if h = host {
-                State.PopoutHosts.RemoveAt(i)
-                break
-            }
-        }
-        if host.hwnd
-            State.HostByHwnd.Delete(host.hwnd "")
-        if host.HasProp("iconHandle") && host.iconHandle {
-            DllCall("DestroyIcon", "ptr", host.iconHandle)
-            host.iconHandle := 0
-        }
-        host.gui.Destroy()
-    } else {
-        host.gui.Hide()
-    }
-}
 
 ; Returns true if the window handle is valid.
 IsWindowExists(hwnd) {
@@ -889,6 +942,20 @@ FocusEmbeddedContent(hostHwnd, contentHwnd) {
         DllCall("SetFocus", "ptr", contentHwnd)
     } finally {
         DllCall("AttachThreadInput", "uint", ourTid, "uint", targetTid, "int", 0)
+    }
+}
+
+; WM_ACTIVATE handler: when StackTabs regains focus from an external popup (e.g. espanso's
+; selection menu), redirect keyboard focus to the active embedded tab so input goes there.
+OnWmActivate(wParam, lParam, msg, hwnd) {
+    if (wParam & 0xFFFF) = 0  ; being deactivated, not activated
+        return
+    if !State.HostByHwnd.Has(hwnd "")
+        return
+    host := State.HostByHwnd[hwnd ""]
+    if host.activeTabId != "" && host.tabRecords.Has(host.activeTabId) {
+        record := host.tabRecords[host.activeTabId]
+        FocusEmbeddedContent(host.hwnd, record.contentHwnd)
     }
 }
 
@@ -976,29 +1043,6 @@ GetHostForHwnd(hwnd) {
     return ""
 }
 
-; WM_NCCALCSIZE handler: extends client area into title bar to remove white bar (Windows 10/11).
-OnWmNcCalcSize(hwnd, msg, lParam, wParam) {
-    if !wParam || !lParam  ; wParam=1 means valid rects, lParam=struct pointer
-        return
-    host := State.HostByHwnd.Get(hwnd "", "")
-    if !host
-        return
-    ; Call DefWindowProc first; it modifies rgrc[0] to the client rect
-    prevProc := DllCall("GetWindowLongPtr", "ptr", hwnd, "int", -4, "ptr")
-    result := DllCall("CallWindowProc", "ptr", prevProc, "ptr", hwnd, "uint", msg, "ptr", wParam, "ptr", lParam, "ptr")
-    ; Get actual top border thickness (DPI-aware on Win 10 1703+)
-    SM_CXPADDEDBORDER := 92
-    SM_CYFRAME := 33
-    dpi := 0
-    try dpi := DllCall("GetDpiForWindow", "ptr", hwnd, "uint")
-    pad := dpi ? DllCall("GetSystemMetricsForDpi", "int", SM_CXPADDEDBORDER, "uint", dpi, "int") : SysGet(SM_CXPADDEDBORDER)
-    frameY := dpi ? DllCall("GetSystemMetricsForDpi", "int", SM_CYFRAME, "uint", dpi, "int") : SysGet(SM_CYFRAME)
-    topBorder := frameY + pad
-    top := NumGet(lParam, 4, "int")
-    NumPut("int", top - topBorder, lParam, 4)
-    return result
-}
-
 ; Creates a new host window (main or popout) with tab bar, content area, and theme.
 BuildHostInstance(isPopout := false) {
 
@@ -1014,8 +1058,6 @@ BuildHostInstance(isPopout := false) {
 
     title := isPopout ? (Config.HostTitle " (popped out)") : Config.HostTitle
     guiOpts := "+Resize +MinSize" Config.HostMinWidth "x" Config.HostMinHeight
-    if Config.UseCustomTitleBar
-        guiOpts .= " -Caption +Border"
     host.gui := Gui(guiOpts, title)
     host.gui.BackColor := Config.ThemeBackground
     host.gui.MarginX := 0
@@ -1024,20 +1066,9 @@ BuildHostInstance(isPopout := false) {
     host.gui.OnEvent("Close", HostGuiClosed.Bind(host))
     host.gui.OnEvent("Size", HostGuiResized.Bind(host))
 
-    tabBarY := 0
     tabBarH := Config.HeaderHeight
-    if Config.UseCustomTitleBar {
-        tabBarY := Config.TitleBarHeight
-        host.titleBarBg := host.gui.Add("Text", "x0 y0 w" Config.HostWidth " h" Config.TitleBarHeight " +0x200 +0x100 Background" Config.ThemeTabBarBg, "")
-        host.titleBarBg.OnEvent("Click", TitleBarDragClick.Bind(host))
-        host.titleText := host.gui.Add("Text", "x8 y0 w" (Config.HostWidth - 60) " h" Config.TitleBarHeight " +0x200 +0x100 BackgroundTrans", title)
-        host.titleText.OnEvent("Click", TitleBarDragClick.Bind(host))
-        host.titleCloseBtn := host.gui.Add("Text", "x" (Config.HostWidth - 46) " y0 w46 h" Config.TitleBarHeight " +0x200 +0x100 Center Background" Config.ThemeTabBarBg, Config.IconClose)
-        host.titleCloseBtn.SetFont("s" Config.ThemeIconFontSize, Config.ThemeIconFont)
-        host.titleCloseBtn.Opt("c" Config.ThemeIconColor)
-        host.titleCloseBtn.OnEvent("Click", TitleBarCloseClick.Bind(host))
-    }
-    host.tabBarBg := host.gui.Add("Text", "x0 y" tabBarY " w" Config.HostWidth " h" tabBarH " Background" Config.ThemeTabBarBg, "")
+    tabBarY := (Config.TabPosition = "bottom") ? Config.HostHeight - tabBarH : 0
+    host.tabBarBg := host.gui.Add("Text", "x0 y0 w" Config.HostWidth " h" tabBarH " Background" Config.ThemeTabBarBg, "")
     host.tabCanvas := host.gui.Add("Pic",
         "x0 y" tabBarY " w" Config.HostWidth " h" tabBarH " +0xE", "")
     host.contentBorderTop := host.gui.Add("Text", "Hidden x0 y0 w0 h1 Background" Config.ThemeContentBorder, "")
@@ -1059,15 +1090,6 @@ BuildHostInstance(isPopout := false) {
     ; Request Windows 11 rounded corners (no-op if already applied by system)
     cornerPref := 2  ; DWM_WCP_ROUND
     DllCall("dwmapi.dll\DwmSetWindowAttribute", "ptr", host.hwnd, "uint", 33, "uint*", cornerPref, "uint", 4)
-
-    ; Match DWM window border to theme (fixes white/accent bar on Windows 11)
-    if Config.UseCustomTitleBar && host.hwnd {
-        try {
-            rgb := Integer("0x" Config.ThemeTabBarBg)
-            bgr := ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)
-            DllCall("dwmapi\DwmSetWindowAttribute", "ptr", host.hwnd, "int", 34, "uint*", &bgr, "uint", 4)
-        }
-    }
 
     if isPopout
         State.PopoutHosts.Push(host)
@@ -1299,6 +1321,16 @@ WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsE
                         ; the visual refresh; a separate RedrawHostWindow here would cause a double repaint.
                         SelectTab(host, tabId)
                     }
+                    return
+                }
+            }
+        }
+    }
+    if (event = 0x8002) {
+        for host in GetAllHosts() {
+            for tabId, record in host.tabRecords {
+                if (record.topHwnd = hwnd && record.topHwnd != record.contentHwnd) {
+                    SetTimer(ReEmbedTab.Bind(host, tabId), -20)
                     return
                 }
             }
@@ -1574,16 +1606,20 @@ BuildCandidateFromTopWindow(topHwnd) {
         title := WinGetTitle("ahk_id " topHwnd)
         if !DllCall("IsWindowVisible", "ptr", topHwnd)
             return ""
-        if (title = "")
-            return ""
         if Config.WindowTitleMatches.Length = 0
             return ""  ; No match patterns configured
+        ; Match1="" in config is a sentinel meaning "match windows with no title / whitespace-only title".
+        ; All other patterns do a case-insensitive substring match against the title.
         matched := false
         for pat in Config.WindowTitleMatches {
-            if InStr(title, pat, false) {
+            if pat = '""' {
+                if Trim(title) = ""
+                    matched := true
+            } else if InStr(title, pat, false) {
                 matched := true
-                break
             }
+            if matched
+                break
         }
         if !matched
             return ""
@@ -1660,10 +1696,14 @@ ScoreContentCandidate(topHwnd, hwnd) {
         score += 1000000
     titleMatches := false
     for pat in Config.WindowTitleMatches {
-        if (title != "") && InStr(title, pat, false) {
+        if pat = '""' {
+            if Trim(title) = ""
+                titleMatches := true
+        } else if (title != "") && InStr(title, pat, false) {
             titleMatches := true
-            break
         }
+        if titleMatches
+            break
     }
     if titleMatches
         score += 500000
@@ -1889,6 +1929,10 @@ CloseTab(host, tabId) {
     record := host.tabRecords[tabId]
     topHwnd := record.topHwnd
     contentHwnd := record.contentHwnd
+    ; Hide host immediately when closing the last tab — CloseWindowReliably is synchronous
+    ; and can block for up to 2000ms per message, so the host would stay visible otherwise.
+    if !host.isPopout && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 1
+        host.gui.Hide()
     ; Close before detach - window may process close better while still embedded
     CloseWindowReliably(topHwnd, contentHwnd)
     RemoveTrackedTab(host, tabId, false)
@@ -1955,6 +1999,28 @@ RemoveTrackedTab(host, tabId, restoreWindow := true) {
     ; When ShowOnlyWhenTabs and main host now has 0 tabs, hide immediately
     if !host.isPopout && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 0
         host.gui.Hide()
+}
+
+; Re-hides topHwnd when it re-appears while stacked, and restores the StackTabs host.
+ReEmbedTab(host, tabId, *) {
+    if !host.tabRecords.Has(tabId)
+        return
+    record := host.tabRecords[tabId]
+    if IsWindowExists(record.topHwnd) && record.topHwnd != record.contentHwnd
+        DllCall("ShowWindow", "ptr", record.topHwnd, "int", SW_HIDE)
+    if IsWindowExists(host.hwnd) {
+        if DllCall("IsIconic", "ptr", host.hwnd, "int")
+            WinRestore("ahk_id " host.hwnd)
+        else if Config.ShowOnlyWhenTabs && !WinExist("ahk_id " host.hwnd)
+            host.gui.Show()
+    }
+    if IsWindowExists(record.contentHwnd) {
+        if DllCall("GetParent", "ptr", record.contentHwnd, "ptr") != host.clientHwnd
+            AttachTrackedWindow(host, tabId)
+    }
+    LayoutTabButtons(host)
+    ShowOnlyActiveTab(host)
+    RedrawAnyWindow(host.hwnd)
 }
 
 ; Reparents content window into host client area; hides top window if different.
@@ -2064,7 +2130,9 @@ DetachTrackedWindow(host, tabId, restoreWindow := true, restoreSource := true) {
         SetWindowLongPtrValue(hwnd, -16, record.originalContentStyle)
         SetWindowLongPtrValue(hwnd, -20, record.originalContentExStyle)
 
-        flags := SWP_FRAMECHANGED | SWP_SHOWWINDOW
+        ; Only include SWP_SHOWWINDOW when restoring — avoids briefly flashing the window
+        ; on screen (at its original position) right before we hide it on close.
+        flags := SWP_FRAMECHANGED | (restoreWindow ? SWP_SHOWWINDOW : 0)
         DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0
             , "int", posX, "int", posY
             , "int", record.originalContentW, "int", record.originalContentH
@@ -2131,12 +2199,7 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
         }
         tabBarY := windowHeight - Config.HeaderHeight
     } else {
-        tabBarY := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
-    }
-    if host.HasProp("titleBarBg") && host.titleBarBg {
-        host.titleBarBg.Move(0, 0, windowWidth, Config.TitleBarHeight)
-        host.titleText.Move(8, 0, windowWidth - 60, Config.TitleBarHeight)
-        host.titleCloseBtn.Move(windowWidth - 46, 0, 46, Config.TitleBarHeight)
+        tabBarY := 0
     }
     ; Resize tab bar background to full width
     if host.HasProp("tabBarBg") && host.tabBarBg
@@ -2346,8 +2409,6 @@ ArrangeHostsSideBySide(host1, host2) {
 
 ; Shows active tab content, hides others; positions content area and border.
 ShowOnlyActiveTab(host) {
-    DllCall("LockWindowUpdate", "Ptr", host.hwnd)
-    try {
     if (host.activeTabId != "") && !host.tabRecords.Has(host.activeTabId)
         host.activeTabId := ""
     if (host.activeTabId = "") && host.tabOrder.Length
@@ -2409,10 +2470,6 @@ ShowOnlyActiveTab(host) {
         if IsWindowExists(record.contentHwnd)
             DllCall("ShowWindow", "ptr", record.contentHwnd, "int", SW_HIDE)
     }
-    ; Immediate redraw so embedded content paints (RDW_NOERASE in RedrawAnyWindow avoids flash).
-    if activeHwnd
-        RedrawAnyWindow(activeHwnd)
-
     DrawTabBar(host)
     host.lastRefreshActiveTabId := host.activeTabId
     ; Single deferred redraw at 50ms for slow apps (e.g. WPF) that need time to settle.
@@ -2422,9 +2479,6 @@ ShowOnlyActiveTab(host) {
             SetTimer(host.deferredRepaintFn, 0)
         host.deferredRepaintFn := DeferredRepaintCheck.Bind(host)
         SetTimer(host.deferredRepaintFn, -50)
-    }
-    } finally {
-        DllCall("LockWindowUpdate", "Ptr", 0)
     }
 }
 
@@ -2440,12 +2494,15 @@ DrawTabBar(host) {
 
     w := GetClientWidth(host.hwnd)
     h := GetClientHeight(host.hwnd)
-    if !w || !h
+    if !w || !h {
+        ; Window not yet sized (e.g. just made visible) — retry shortly, same as GDI+ failure below
+        SetTimer(() => DrawTabBar(host), -50)
         return
+    }
 
     tabBarW := w
     tabBarH := Config.HeaderHeight
-    tabBarY := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
+    tabBarY := 0
     if Config.TabPosition = "bottom"
         tabBarY := h - Config.HeaderHeight
 
@@ -2643,8 +2700,6 @@ UpdateHostTitle(host) {
         return
     host.lastRefreshTitle := title
     host.gui.Title := title
-    if host.HasProp("titleText") && host.titleText
-        host.titleText.Text := title
     UpdateHostIcon(host)
 }
 
@@ -2653,12 +2708,11 @@ GetEmbedRect(host, &x, &y, &w, &h) {
 
     padBottom := (Config.HostPaddingBottom >= 0) ? Config.HostPaddingBottom : Config.HostPadding
     x := Config.HostPadding
-    customTitleH := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
 
     if Config.TabPosition = "bottom"
-        y := customTitleH + Config.HostPadding
+        y := Config.HostPadding
     else
-        y := customTitleH + Config.HeaderHeight + Config.HostPadding
+        y := Config.HeaderHeight + Config.HostPadding
 
     if host.hwnd && IsWindowExists(host.hwnd) {
         try {
@@ -2822,11 +2876,35 @@ GetOwnerChain(hwnd) {
 }
 
 ; Returns title from top window, or content window if top has no title.
+; Falls back to process name for truly nameless windows (e.g. matched via Match1="").
 GetPreferredTabTitle(record) {
     title := SafeWinGetTitle(record.topHwnd)
     if title != ""
         return title
-    return SafeWinGetTitle(record.contentHwnd)
+    title := SafeWinGetTitle(record.contentHwnd)
+    if title != ""
+        return title
+    return record.HasProp("processName") ? record.processName : ""
+}
+
+; Briefly sets host to topmost then drops back to normal z-order.
+; This repositions the host above the app's dialogs without making it
+; permanently always-on-top. Uses SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+; so the window is not moved, resized, or focused.
+BumpHostToFront(host) {
+    if !host || !host.hwnd || !IsWindowExists(host.hwnd)
+        return
+    SWP_FLAGS := 0x0013  ; SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+    ; Step 1: set topmost (brings above all non-topmost windows)
+    DllCall("SetWindowPos", "ptr", host.hwnd,
+        "ptr", -1,       ; HWND_TOPMOST
+        "int", 0, "int", 0, "int", 0, "int", 0,
+        "uint", SWP_FLAGS)
+    ; Step 2: immediately drop topmost so it won't float above unrelated apps
+    DllCall("SetWindowPos", "ptr", host.hwnd,
+        "ptr", -2,       ; HWND_NOTOPMOST
+        "int", 0, "int", 0, "int", 0, "int", 0,
+        "uint", SWP_FLAGS)
 }
 
 ; Briefly sets host to topmost then drops back to normal z-order.
@@ -3194,7 +3272,7 @@ IsMouseOverAnyTabBar() {
         clientH := GetClientHeight(host.hwnd)
         if clientX < 0 || clientY < 0 || clientX >= clientW || clientY >= clientH
             continue
-        tabBarY := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
+        tabBarY := 0
         if Config.TabPosition = "bottom"
             tabBarY := clientH - Config.HeaderHeight
         if clientY >= tabBarY && clientY < tabBarY + Config.HeaderHeight
@@ -3209,7 +3287,7 @@ OnTabCanvasMouseMove(wParam, lParam, msg, hwnd) {
     for host in GetAllHosts() {
         if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
-        tabBarY := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
+        tabBarY := 0
         if Config.TabPosition = "bottom" {
             clientH := GetClientHeight(host.hwnd)
             tabBarY := clientH - Config.HeaderHeight
@@ -3257,7 +3335,7 @@ OnTabCanvasClick(wParam, lParam, msg, hwnd) {
     for host in GetAllHosts() {
         if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
-        tabBarY := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
+        tabBarY := 0
         if Config.TabPosition = "bottom" {
             clientH := GetClientHeight(host.hwnd)
             tabBarY := clientH - Config.HeaderHeight
@@ -3306,7 +3384,7 @@ OnTabCanvasMidClick(wParam, lParam, msg, hwnd) {
     for host in GetAllHosts() {
         if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
-        tabBarY := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
+        tabBarY := 0
         if Config.TabPosition = "bottom" {
             clientH := GetClientHeight(host.hwnd)
             tabBarY := clientH - Config.HeaderHeight
@@ -3327,7 +3405,7 @@ OnTabCanvasRightClick(wParam, lParam, msg, hwnd) {
     for host in GetAllHosts() {
         if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
-        tabBarY := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
+        tabBarY := 0
         if Config.TabPosition = "bottom" {
             clientH := GetClientHeight(host.hwnd)
             tabBarY := clientH - Config.HeaderHeight
@@ -3358,6 +3436,7 @@ OnTabCanvasRightClick(wParam, lParam, msg, hwnd) {
     }
 }
 
+OnMessage(0x0006, OnWmActivate)   ; WM_ACTIVATE: re-focus embedded content when host regains focus
 OnMessage(0x0200, OnTabCanvasMouseMove)
 OnMessage(0x0201, OnTabCanvasClick)
 OnMessage(0x0204, OnTabCanvasRightClick)
@@ -3537,6 +3616,8 @@ GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fon
 ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics) {
     hBmp := GdipBitmapToHBITMAP(pBitmap)
     GdipCleanupBitmap(pBitmap, pGraphics)
+    if !hBmp
+        return
     oldBmp := SendMessage(0x172, 0, hBmp,, "ahk_id " canvasCtrl.Hwnd)
     if oldBmp
         DllCall("DeleteObject", "UPtr", oldBmp)
@@ -3555,7 +3636,7 @@ OnTabCanvasMouseWheel(wParam, lParam, msg, hwnd) {
         DllCall("ScreenToClient", "Ptr", host.hwnd, "Ptr", pt)
         clientX := NumGet(pt, 0, "Int")
         clientY := NumGet(pt, 4, "Int")
-        tabBarY := Config.UseCustomTitleBar ? Config.TitleBarHeight : 0
+        tabBarY := 0
         if Config.TabPosition = "bottom" {
             clientH := GetClientHeight(host.hwnd)
             tabBarY := clientH - Config.HeaderHeight
