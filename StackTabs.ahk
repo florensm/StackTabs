@@ -1271,6 +1271,10 @@ WatchdogPostStackUpdate(*) {
     ShowOnlyActiveTab(State.MainHost)
     UpdateHostTitle(State.MainHost)
     RedrawAnyWindow(State.MainHost.hwnd)
+    ; Deferred tab bar redraw: Show() is async — WM_SIZE may not have been
+    ; processed yet when DrawTabBar runs above, causing a blank tab bar on
+    ; first embed. This second draw fires after the message loop has settled.
+    SetTimer(() => (State.MainHost ? DrawTabBar(State.MainHost) : 0), -150)
 }
 
 ; Switches to newly stacked tab after delay; lets content load before showing to reduce glitch.
