@@ -740,6 +740,13 @@ SwitcherClose() {
     State.SwitcherAllTabs := []
     State.SwitcherVisible := []
     State.SwitcherCards   := []
+    ; The overlay (AlwaysOnTop) covered the host while DrawTabBar ran during preview, so
+    ; UpdateWindow(canvas) validated the canvas update region while DWM still showed the old
+    ; frame. Now that the overlay is gone, force a fresh redraw so the correct bitmap shows.
+    for host in GetAllHosts() {
+        DrawTabBar(host)
+        RedrawAnyWindow(host.hwnd)
+    }
 }
 
 SwitcherOnSearch(ctrl, *) {
