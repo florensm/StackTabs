@@ -2272,56 +2272,15 @@ TransferTrackedWindow(sourceHost, destHost, tabId) {
     return true
 }
 
-; Positions and sizes tab buttons, popout/close controls, and indicators.
+; Positions tab bar controls and redraws the tab bar bitmap.
+; DrawTabBar reads its own dimensions and handles all control moves — no WM_SETREDRAW
+; suppression here so ApplyBitmapToCanvas → UpdateWindow takes effect immediately.
 LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
-
-    if !host || !host.gui
+    if !host || !host.gui || !host.hwnd || !IsWindowExists(host.hwnd)
         return
-    if !host.hwnd || !IsWindowExists(host.hwnd)
-        return
-
     host.isLayingOut := true
-    prev := DetectHiddenWindows(true)
-    try SendMessage(0x000B, 0, 0,, "ahk_id " host.hwnd)
-    DetectHiddenWindows(prev)
-    try {
-    if !windowWidth {
-        windowWidth := GetClientWidth(host.hwnd)
-        if !windowWidth
-            windowWidth := Config.HostWidth
-    }
-
-    if Config.TabPosition = "bottom" {
-        if !windowHeight {
-            windowHeight := GetClientHeight(host.hwnd)
-            if !windowHeight
-                windowHeight := Config.HostHeight
-        }
-        tabBarY := windowHeight - Config.HeaderHeight
-    } else {
-        tabBarY := 0
-    }
-    ; Resize tab bar background to full width
-    if host.HasProp("tabBarBg") && host.tabBarBg
-        host.tabBarBg.Move(0, tabBarY, windowWidth, Config.HeaderHeight)
-
-    tabCount := host.tabOrder.Length
-
-    if !tabCount {
-        DrawTabBar(host)
-        return
-    }
-
     DrawTabBar(host)
-    } finally {
-    if host.hwnd && IsWindowExists(host.hwnd) {
-        prev := DetectHiddenWindows(true)
-        try SendMessage(0x000B, 1, 0,, "ahk_id " host.hwnd)  ; always re-enable
-        DetectHiddenWindows(prev)
-        try DllCall("RedrawWindow", "Ptr", host.hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0185)  ; +RDW_UPDATENOW (0x0100)
-    }
-        host.isLayingOut := false
-    }
+    host.isLayingOut := false
 }
 
 ; Sets active tab, shows its content, updates host title.
