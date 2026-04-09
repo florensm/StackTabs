@@ -2586,7 +2586,7 @@ DrawTabBar(host) {
 
     tabCount := host.tabOrder.Length
     if tabCount = 0 {
-        ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics)
+        ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics, host)
         return
     }
 
@@ -2734,7 +2734,7 @@ DrawTabBar(host) {
             arrowColor, Config.ThemeIconFont, Config.ThemeIconFontSize, false)
     }
 
-    ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics)
+    ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics, host)
 }
 
 ; Updates host window title with tab count and active tab name.
@@ -3487,6 +3487,7 @@ OnTabCanvasRightClick(wParam, lParam, msg, hwnd) {
 }
 
 OnMessage(0x0006, OnWmActivate)   ; WM_ACTIVATE: re-focus embedded content when host regains focus
+OnMessage(0x000F, OnTabCanvasPaint)  ; WM_PAINT: BitBlt stored bitmap directly to canvas DC
 OnMessage(0x0200, OnTabCanvasMouseMove)
 OnMessage(0x0201, OnTabCanvasClick)
 OnMessage(0x0204, OnTabCanvasRightClick)
@@ -3663,23 +3664,56 @@ GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fon
     DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
 }
 
-ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics) {
+; Stores the rendered HBITMAP on the host so OnTabCanvasPaint can BitBlt it on every WM_PAINT.
+; This replaces the old STM_SETIMAGE approach, which was unreliable because SS_BITMAP Static
+; controls don't guarantee a repaint when the image is set — they only paint on WM_PAINT, which
+; may never fire if no invalidation is queued. Handling WM_PAINT directly with BitBlt ensures
+; the correct content is always drawn regardless of what triggered the repaint.
+ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics, host := "") {
     hBmp := GdipBitmapToHBITMAP(pBitmap)
     GdipCleanupBitmap(pBitmap, pGraphics)
     if !hBmp
         return
-    oldBmp := SendMessage(0x172, 0, hBmp,, "ahk_id " canvasCtrl.Hwnd)
-    if oldBmp
-        DllCall("DeleteObject", "UPtr", oldBmp)
-    ; STM_SETIMAGE does not always call InvalidateRect internally (behaviour varies by Windows
-    ; version and whether the image size changed). Explicitly invalidate so UpdateWindow has a
-    ; pending WM_PAINT to flush — without this the canvas can stay visually blank.
+    if host {
+        ; Delete the previous HBITMAP — we own it, the WM_PAINT handler only reads it.
+        if host.HasProp("tabBarHBitmap") && host.tabBarHBitmap
+            DllCall("DeleteObject", "UPtr", host.tabBarHBitmap)
+        host.tabBarHBitmap := hBmp
+    } else {
+        ; No host reference (shouldn't happen in normal flow) — fall back to STM_SETIMAGE.
+        oldBmp := SendMessage(0x172, 0, hBmp,, "ahk_id " canvasCtrl.Hwnd)
+        if oldBmp
+            DllCall("DeleteObject", "UPtr", oldBmp)
+    }
+    ; Invalidate and flush synchronously so the new bitmap appears immediately.
     DllCall("InvalidateRect", "ptr", canvasCtrl.Hwnd, "ptr", 0, "int", false)
     DllCall("UpdateWindow", "ptr", canvasCtrl.Hwnd)
-    ; Also flush the parent so DWM composites the updated child to screen immediately.
-    parentHwnd := DllCall("GetParent", "ptr", canvasCtrl.Hwnd, "ptr")
-    if parentHwnd
-        DllCall("UpdateWindow", "ptr", parentHwnd)
+}
+
+; WM_PAINT handler for the tab canvas: BitBlts the stored HBITMAP directly to the canvas DC.
+; Called for every WM_PAINT on any AHK window; returns 0 (suppress default) only for tab canvases.
+OnTabCanvasPaint(wParam, lParam, msg, hwnd) {
+    for host in GetAllHosts() {
+        if !host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd
+            continue
+        ps := Buffer(64, 0)
+        hdc := DllCall("BeginPaint", "ptr", hwnd, "ptr", ps, "ptr")
+        if hdc && host.HasProp("tabBarHBitmap") && host.tabBarHBitmap {
+            rc := Buffer(16, 0)
+            DllCall("GetClientRect", "ptr", hwnd, "ptr", rc)
+            w := NumGet(rc, 8, "int")
+            h := NumGet(rc, 12, "int")
+            memDC := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+            old := DllCall("SelectObject", "ptr", memDC, "ptr", host.tabBarHBitmap, "ptr")
+            DllCall("BitBlt", "ptr", hdc, "int", 0, "int", 0, "int", w, "int", h,
+                "ptr", memDC, "int", 0, "int", 0, "uint", 0x00CC0020)  ; SRCCOPY
+            DllCall("SelectObject", "ptr", memDC, "ptr", old)
+            DllCall("DeleteDC", "ptr", memDC)
+        }
+        DllCall("EndPaint", "ptr", hwnd, "ptr", ps)
+        return 0  ; suppress default Static WM_PAINT
+    }
+    return ""
 }
 
 OnTabCanvasMouseWheel(wParam, lParam, msg, hwnd) {
