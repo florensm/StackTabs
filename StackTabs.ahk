@@ -3671,10 +3671,15 @@ ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics) {
     oldBmp := SendMessage(0x172, 0, hBmp,, "ahk_id " canvasCtrl.Hwnd)
     if oldBmp
         DllCall("DeleteObject", "UPtr", oldBmp)
-    ; Force immediate repaint — STM_SETIMAGE invalidates the control but WM_PAINT is deferred
-    ; until the message loop is free. UpdateWindow flushes it synchronously so the tab bar
-    ; pixels are updated right away instead of waiting for the next message loop cycle.
+    ; STM_SETIMAGE does not always call InvalidateRect internally (behaviour varies by Windows
+    ; version and whether the image size changed). Explicitly invalidate so UpdateWindow has a
+    ; pending WM_PAINT to flush — without this the canvas can stay visually blank.
+    DllCall("InvalidateRect", "ptr", canvasCtrl.Hwnd, "ptr", 0, "int", false)
     DllCall("UpdateWindow", "ptr", canvasCtrl.Hwnd)
+    ; Also flush the parent so DWM composites the updated child to screen immediately.
+    parentHwnd := DllCall("GetParent", "ptr", canvasCtrl.Hwnd, "ptr")
+    if parentHwnd
+        DllCall("UpdateWindow", "ptr", parentHwnd)
 }
 
 OnTabCanvasMouseWheel(wParam, lParam, msg, hwnd) {
