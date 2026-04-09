@@ -366,6 +366,7 @@ BuildTrayMenu() {
     A_TrayMenu.Add()
     A_TrayMenu.Add("Open themes folder", (*) => Run(Config.ThemesDir))
     A_TrayMenu.Add()
+    A_TrayMenu.Add("Reload", (*) => Reload())
     A_TrayMenu.Add("Exit", (*) => ExitApp())
 }
 
@@ -554,7 +555,23 @@ SwitcherCycleStep(dir) {
     SwitcherPreviewSelected()
 }
 
-; Switch tab content + update tab bar without stealing keyboard focus from the switcher.
+; Bring the tab-switcher GUI to the foreground if it is still a valid window.
+SwitcherFocusGui() {
+    if !State.SwitcherGui
+        return
+    try hid := State.SwitcherGui.Hwnd
+    catch {
+        State.SwitcherGui := ""
+        return
+    }
+    if !hid || !IsWindowExists(hid)
+        return
+    prev := DetectHiddenWindows(true)
+    try WinActivate("ahk_id " hid)
+    DetectHiddenWindows(prev)
+}
+
+; Switch tab content + update tab bar; in Ctrl+Tab mode re-activate overlay (WinEvent may focus embedded app).
 SwitcherPreviewSelected() {
     if !State.SwitcherGui
         return
@@ -574,6 +591,9 @@ SwitcherPreviewSelected() {
     item.host.activeTabId := item.tabId
     ShowOnlyActiveTab(item.host)
     UpdateHostTitle(item.host)
+    ; WinEvent NAMECHANGE may call SelectTab → FocusEmbeddedContent while previewing; keep overlay focused for Tab/J-K.
+    if State.SwitcherCtrlTabMode
+        SwitcherFocusGui()
 }
 
 ShowTabSwitcher(ctrlTabMode := false, dir := 1) {
@@ -690,22 +710,21 @@ ShowTabSwitcher(ctrlTabMode := false, dir := 1) {
     }
 
     State.SwitcherGui.OnEvent("Close", (*) => SwitcherClose())
-    switcherHwnd := State.SwitcherGui.Hwnd
     State.SwitcherGui.Show("x" ox " y" oy " w" overlayWidth " h" overlayHeight)
     if !IsObject(State.SwitcherGui)
         return
+    switcherHwnd := State.SwitcherGui.Hwnd
     DllCall("dwmapi.dll\DwmSetWindowAttribute",
         "ptr", switcherHwnd, "uint", 33, "uint*", 2, "uint", 4)
 
     OnMessage(0x0100, SwitcherOnKeyDown, 1)
     if ctrlTabMode {
-        SwitcherPreviewSelected()   ; immediately show the pre-selected tab
-        WinActivate("ahk_id " switcherHwnd)
+        SwitcherPreviewSelected()   ; preview + SwitcherFocusGui when Ctrl+Tab mode
     } else {
         ; Cue banner "Search tabs..." inside the edit box
         SendMessage(0x1501, 1, StrPtr("Search tabs..."),, "ahk_id " searchBox.Hwnd)
         searchBox.OnEvent("Change", SwitcherOnSearch)
-        WinActivate("ahk_id " switcherHwnd)
+        SwitcherFocusGui()
         searchBox.Focus()
     }
 }
@@ -869,6 +888,7 @@ SwitcherCtrlRelease() {
         if Config.ShowOnlyWhenTabs && GetLiveTabCount(State.MainHost) = 0
             return
         State.MainHost.gui.Show()
+        ShowOnlyActiveTab(State.MainHost)
     }
 }
 
@@ -1129,6 +1149,8 @@ HostGuiResized(host, guiObj, minMax, width, height) {
         return
     if host.HasProp("isResizing") && host.isResizing
         return
+    if host.HasProp("isLayingOut") && host.isLayingOut
+        return
     if width < 100 || height < 100
         return
     host.isResizing := true
@@ -1176,9 +1198,13 @@ ProcessPendingCandidate(tabId, pending) {
     freshCandidate := BuildCandidateFromTopWindow(pending.candidate.topHwnd)
     if !IsObject(freshCandidate)
         return ""
-    ; Skip if already embedded (could have been stacked by slow sweep between checks)
+    ; Skip if already embedded — check by id AND by hwnd (title change can produce a different id)
     if State.MainHost.tabRecords.Has(freshCandidate.id)
         return ""
+    for _, rec in State.MainHost.tabRecords {
+        if rec.topHwnd = freshCandidate.topHwnd || rec.contentHwnd = freshCandidate.contentHwnd
+            return ""
+    }
     ; Duplicate detection: same process + same title = offer to close the older one
     existingTabId := FindTabWithSameTitle(State.MainHost, freshCandidate)
     if existingTabId != "" {
@@ -1213,7 +1239,10 @@ WatchdogCheck(*) {
                 pending.lastSeenTitle := currentTitle
             }
         } else if elapsed >= Config.WatchdogMaxMs {
-            toRemove.Push(tabId)
+            ; Only discard if the window is gone — slow-starting WPF apps can take several
+            ; seconds to set a title and should not be silently dropped while still alive.
+            if !IsWindowExists(pending.candidate.topHwnd)
+                toRemove.Push(tabId)
         }
     }
     anyStacked := false
@@ -1261,19 +1290,23 @@ WatchdogCheck(*) {
 WatchdogPostStackUpdate(*) {
     if !State.MainHost
         return
-    ; Only call Show when the window is actually hidden â€” avoids repositioning an already-visible window
+    ; Only call Show when the window is actually hidden — avoids repositioning an already-visible window
     if Config.ShowOnlyWhenTabs && State.MainHost.tabOrder.Length >= 1 {
-        if !WinExist("ahk_id " State.MainHost.hwnd)
+        if !(GetWindowLongPtrValue(State.MainHost.hwnd, -16) & 0x10000000) {  ; WS_VISIBLE
+            ; Set title before Show so tiling WMs (e.g. GlazeWM) see the correct title on EVENT_OBJECT_SHOW
+            UpdateHostTitle(State.MainHost)
             State.MainHost.gui.Show()  ; Show() activates by default; intentional for first appearance
+        }
         ; If already visible don't force-activate — user may have focus elsewhere
     }
     LayoutTabButtons(State.MainHost)
     ShowOnlyActiveTab(State.MainHost)
     UpdateHostTitle(State.MainHost)
     RedrawAnyWindow(State.MainHost.hwnd)
-    ; Deferred tab bar redraw: Show() is async — WM_SIZE may not have been
-    ; processed yet when DrawTabBar runs above, causing a blank tab bar on
-    ; first embed. This second draw fires after the message loop has settled.
+    ; Deferred layout + redraw: WM_SIZE from Show() may not have been processed yet when the
+    ; calls above run, causing a blank tab bar or wrong embed size on first appearance.
+    ; Both fire after the message loop has settled with the correct window dimensions.
+    SetTimer(() => (State.MainHost ? ShowOnlyActiveTab(State.MainHost) : 0), -148)
     SetTimer(() => (State.MainHost ? DrawTabBar(State.MainHost) : 0), -150)
 }
 
@@ -1311,7 +1344,9 @@ WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsE
         return
     if (idObject != 0 || !hwnd)
         return
-    ; NAMECHANGE on already-tracked tab: update tab title and switch to that tab
+    ; NAMECHANGE on already-tracked tab: update the title label and redraw the tab bar.
+    ; Do NOT call SelectTab here — switching the active tab on every title change (e.g. Notepad
+    ; adding a '*' prefix when unsaved) would steal focus from whichever tab the user is in.
     if (event = 0x800C) {
         for host in GetAllHosts() {
             for tabId, record in host.tabRecords {
@@ -1320,10 +1355,9 @@ WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsE
                     if newTitle != "" && newTitle != record.title {
                         record.title := newTitle
                         UpdateRecordTitleCache(record)
-                        LayoutTabButtons(host)
-                        ; SelectTab → ShowOnlyActiveTab → UpdateTabButtonStyles → WinRedraw handles
-                        ; the visual refresh; a separate RedrawHostWindow here would cause a double repaint.
-                        SelectTab(host, tabId)
+                        DrawTabBar(host)
+                        if tabId = host.activeTabId
+                            UpdateHostTitle(host)
                     }
                     return
                 }
@@ -1368,8 +1402,17 @@ WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsE
 OnWindowCreated(hwnd) {
     if !State.MainHost || State.IsCleaningUp
         return
-    if State.SwitcherGui && hwnd = State.SwitcherGui.Hwnd
-        return
+    try {
+        if State.SwitcherGui && hwnd = State.SwitcherGui.Hwnd
+            return
+    } catch {
+        State.SwitcherGui := ""  ; Gui destroyed before State was cleared
+    }
+    ; Never embed our own host windows
+    for host in GetAllHosts() {
+        if host.hwnd = hwnd
+            return
+    }
     ; Fast HWND check before the expensive candidate build (which walks all descendants).
     ; Covers NAMECHANGE events on already-tracked tabs whose title changed.
     for host in GetAllHosts() {
@@ -1430,6 +1473,20 @@ OnWindowDestroyed(hwnd) {
                 RedrawAnyWindow(host.hwnd)
                 if State.MainHost && host = State.MainHost && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 0
                     State.MainHost.gui.Hide()
+                ; Destroy empty popout — CloseTabDeferredUpdate handles this for StackTabs-initiated
+                ; closes, but external window closes bypass that path and leave a blank popout visible.
+                if host.isPopout && host.tabOrder.Length = 0 {
+                    for i, h in State.PopoutHosts {
+                        if h = host {
+                            State.PopoutHosts.RemoveAt(i)
+                            break
+                        }
+                    }
+                    if host.hwnd
+                        State.HostByHwnd.Delete(host.hwnd "")
+                    InvalidateHostsCache()
+                    host.gui.Destroy()
+                }
                 return
             }
         }
@@ -1477,14 +1534,26 @@ RefreshWindows(*) {
             if TickElapsed(State.LastHookEventTick, now) >= 5000 {
                 ; hooks have been quiet for 5s — run full discovery scan as fallback
                 candidates := DiscoverCandidateWindows()
+                ; Build hwnd index so we can detect already-tracked windows whose id changed (e.g. title change)
+                trackedHwnds := Map()
+                for _, rec in host.tabRecords {
+                    trackedHwnds[rec.topHwnd ""] := true
+                    trackedHwnds[rec.contentHwnd ""] := true
+                }
+                currentHwnds := Map()
                 for candidate in candidates {
                     currentIds[candidate.id] := true
+                    currentHwnds[candidate.topHwnd ""] := true
 
                     if host.tabRecords.Has(candidate.id) {
                         if UpdateTrackedTab(host, candidate.id, candidate)
                             structureChanged := true
                         continue
                     }
+
+                    ; Guard: skip if this hwnd is already tracked under a different id (e.g. title changed)
+                    if trackedHwnds.Has(candidate.topHwnd "") || trackedHwnds.Has(candidate.contentHwnd "")
+                        continue
 
                     if !State.PendingCandidates.Has(candidate.id) {
                         TryStackOrPending(host, candidate)
@@ -1497,9 +1566,11 @@ RefreshWindows(*) {
                     State.PendingCandidates[candidate.id].candidate := candidate
                 }
 
+                ; Remove pending candidates whose window is gone — use hwnd not id,
+                ; so a title change (which changes the id) doesn't reset the pending timer.
                 stalePending := []
                 for tabId, pending in State.PendingCandidates {
-                    if !currentIds.Has(tabId)
+                    if !currentHwnds.Has(pending.candidate.topHwnd "")
                         stalePending.Push(tabId)
                 }
                 for tabId in stalePending {
@@ -1562,6 +1633,25 @@ RefreshWindows(*) {
         } else
             State.MainHost.gui.Hide()
     }
+
+    ; Fallback: destroy any popout hosts that ended up empty (e.g. stale-tab cleanup left them blank).
+    emptyPopouts := []
+    for h in State.PopoutHosts {
+        if h.tabOrder.Length = 0
+            emptyPopouts.Push(h)
+    }
+    for h in emptyPopouts {
+        for i, ph in State.PopoutHosts {
+            if ph = h {
+                State.PopoutHosts.RemoveAt(i)
+                break
+            }
+        }
+        if h.hwnd
+            State.HostByHwnd.Delete(h.hwnd "")
+        InvalidateHostsCache()
+        h.gui.Destroy()
+    }
 }
 
 ; Scans all top-level windows and returns those matching title patterns and not already embedded.
@@ -1607,6 +1697,11 @@ BuildCandidateFromTopWindow(topHwnd) {
     try {
         if !IsWindowExists(topHwnd)
             return ""
+        ; Never embed our own host windows — prevents StackTabs from stacking itself
+        for host in GetAllHosts() {
+            if host.hwnd = topHwnd
+                return ""
+        }
         title := WinGetTitle("ahk_id " topHwnd)
         if !DllCall("IsWindowVisible", "ptr", topHwnd)
             return ""
@@ -1953,7 +2048,7 @@ CloseTabDeferredUpdate(host, *) {
     UpdateHostTitle(host)
     RedrawAnyWindow(host.hwnd)
     if host.hwnd && IsWindowExists(host.hwnd) && host.tabOrder.Length > 0
-        WinActivate("ahk_id " host.hwnd)
+        try WinActivate("ahk_id " host.hwnd)
     ; Destroy empty popout
     if host.isPopout && host.tabOrder.Length = 0 {
         for i, h in State.PopoutHosts {
@@ -2005,19 +2100,21 @@ RemoveTrackedTab(host, tabId, restoreWindow := true) {
         host.gui.Hide()
 }
 
-; Re-hides topHwnd when it re-appears while stacked, and restores the StackTabs host.
+; Re-hides topHwnd when it re-appears while stacked; shows the host if it was tray-hidden.
+; Does NOT restore a minimized host — the user minimized it intentionally; let HostGuiResized
+; re-layout on restore (WinRestore here would pop up the host against the user's intent).
 ReEmbedTab(host, tabId, *) {
     if !host.tabRecords.Has(tabId)
         return
     record := host.tabRecords[tabId]
     if IsWindowExists(record.topHwnd) && record.topHwnd != record.contentHwnd
         DllCall("ShowWindow", "ptr", record.topHwnd, "int", SW_HIDE)
-    if IsWindowExists(host.hwnd) {
-        if DllCall("IsIconic", "ptr", host.hwnd, "int")
-            WinRestore("ahk_id " host.hwnd)
-        else if Config.ShowOnlyWhenTabs && !WinExist("ahk_id " host.hwnd)
-            host.gui.Show()
-    }
+    ; If host is gone or minimized: topHwnd is now hidden; bail out.
+    ; HostGuiResized(minMax=0) will call ShowOnlyActiveTab when the user restores the host.
+    if !IsWindowExists(host.hwnd) || DllCall("IsIconic", "ptr", host.hwnd, "int")
+        return
+    if Config.ShowOnlyWhenTabs && !WinExist("ahk_id " host.hwnd)
+        host.gui.Show()
     if IsWindowExists(record.contentHwnd) {
         if DllCall("GetParent", "ptr", record.contentHwnd, "ptr") != host.clientHwnd
             AttachTrackedWindow(host, tabId)
@@ -2077,16 +2174,19 @@ AttachTrackedWindow(host, tabId) {
         DllCall("ShowWindow", "ptr", record.topHwnd, "int", SW_HIDE)
     }
 
-    ; Position at final content rect immediately so when we show it there's no resize glitch.
+    ; Hide content window immediately after reparent — SetParent makes WS_VISIBLE children
+    ; briefly visible, which causes a background flash in the host. Hide first, then position.
+    DllCall("ShowWindow", "ptr", hwnd, "int", SW_HIDE)
+
+    ; Position at final content rect so when ShowOnlyActiveTab shows it there's no resize glitch.
     GetEmbedRect(host, &areaX, &areaY, &areaW, &areaH)
     areaX += 1
     areaY += 1
     areaW -= 2
     areaH -= 2
-    flags := SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE
+    flags := SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE
     DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", areaX, "int", areaY, "int", areaW, "int", areaH, "uint", flags)
     try SendMessage(0x000B, 1, 0,, "ahk_id " hwnd,,,, 500)  ; WM_SETREDRAW TRUE
-    DllCall("ShowWindow", "ptr", hwnd, "int", SW_HIDE)
     return true
 }
 
@@ -2181,19 +2281,15 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
         return
 
     host.isLayingOut := true
-    if host.hwnd && IsWindowExists(host.hwnd) {
-        prev := DetectHiddenWindows(true)
-        try SendMessage(0x000B, 0, 0,, "ahk_id " host.hwnd)
-        DetectHiddenWindows(prev)
-    }
+    prev := DetectHiddenWindows(true)
+    try SendMessage(0x000B, 0, 0,, "ahk_id " host.hwnd)
+    DetectHiddenWindows(prev)
     try {
     if !windowWidth {
         windowWidth := GetClientWidth(host.hwnd)
         if !windowWidth
             windowWidth := Config.HostWidth
     }
-    if !windowWidth
-        windowWidth := Config.HostWidth
 
     if Config.TabPosition = "bottom" {
         if !windowHeight {
@@ -2216,25 +2312,13 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
         return
     }
 
-    ; Compute tab Y: legacy TabBarOffsetY >= 0, or from alignment (top/center/bottom)
-    if Config.TabBarOffsetY >= 0
-        tabOffsetY := Config.TabBarOffsetY
-    else {
-        align := StrLower(Config.TabBarAlignment)
-        if (align = "top")
-            tabOffsetY := 0
-        else if (align = "bottom")
-            tabOffsetY := Config.HeaderHeight - Config.TabHeight
-        else
-            tabOffsetY := (Config.HeaderHeight - Config.TabHeight) // 2  ; center (default)
-    }
     DrawTabBar(host)
     } finally {
     if host.hwnd && IsWindowExists(host.hwnd) {
         prev := DetectHiddenWindows(true)
         try SendMessage(0x000B, 1, 0,, "ahk_id " host.hwnd)  ; always re-enable
         DetectHiddenWindows(prev)
-        try DllCall("RedrawWindow", "Ptr", host.hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0085)
+        try DllCall("RedrawWindow", "Ptr", host.hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0185)  ; +RDW_UPDATENOW (0x0100)
     }
         host.isLayingOut := false
     }
@@ -2248,7 +2332,7 @@ SelectTab(host, tabId, *) {
     host.activeTabId := tabId
     ShowOnlyActiveTab(host)
     UpdateHostTitle(host)
-    if host.tabRecords.Has(tabId) && IsWindowExists(host.tabRecords[tabId].contentHwnd)
+    if IsWindowExists(host.tabRecords[tabId].contentHwnd)
         FocusEmbeddedContent(host.hwnd, host.tabRecords[tabId].contentHwnd)
 }
 
@@ -2412,7 +2496,8 @@ ArrangeHostsSideBySide(host1, host2) {
 }
 
 ; Shows active tab content, hides others; positions content area and border.
-ShowOnlyActiveTab(host) {
+; scheduleDeferred: pass false when called from DeferredRepaintCheck to avoid infinite chain.
+ShowOnlyActiveTab(host, scheduleDeferred := true) {
     if (host.activeTabId != "") && !host.tabRecords.Has(host.activeTabId)
         host.activeTabId := ""
     if (host.activeTabId = "") && host.tabOrder.Length
@@ -2455,6 +2540,11 @@ ShowOnlyActiveTab(host) {
         record := host.tabRecords[tabId]
         if !IsWindowExists(record.contentHwnd)
             continue
+        ; If the real parent is not our host (e.g. after minimize/restore or app reparenting),
+        ; SetWindowPos uses client coords relative to the wrong window — often top-left of the
+        ; original app. Re-attach before positioning.
+        if DllCall("GetParent", "ptr", record.contentHwnd, "ptr") != host.clientHwnd
+            AttachTrackedWindow(host, tabId)
         ; Position without SWP_NOCOPYBITS — avoids erasing pixels before the window repaints.
         flags := SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE
         DllCall("SetWindowPos", "ptr", record.contentHwnd, "ptr", 0
@@ -2471,14 +2561,17 @@ ShowOnlyActiveTab(host) {
         if tabId = host.activeTabId
             continue
         record := host.tabRecords[tabId]
-        if IsWindowExists(record.contentHwnd)
+        if IsWindowExists(record.contentHwnd) {
+            if DllCall("GetParent", "ptr", record.contentHwnd, "ptr") != host.clientHwnd
+                AttachTrackedWindow(host, tabId)
             DllCall("ShowWindow", "ptr", record.contentHwnd, "int", SW_HIDE)
+        }
     }
     DrawTabBar(host)
     host.lastRefreshActiveTabId := host.activeTabId
-    ; Single deferred redraw at 50ms for slow apps (e.g. WPF) that need time to settle.
-    ; Debounced: cancel previous so we don't stack redraws when switching tabs quickly.
-    if host.activeTabId != "" {
+    ; Deferred re-layout at 50ms: re-attempts ShowOnlyActiveTab in case content wasn't ready
+    ; (e.g. WPF rendering pipeline hasn't settled). Debounced so rapid tab switches don't stack.
+    if scheduleDeferred && host.activeTabId != "" {
         if host.HasProp("deferredRepaintFn") && host.deferredRepaintFn
             SetTimer(host.deferredRepaintFn, 0)
         host.deferredRepaintFn := DeferredRepaintCheck.Bind(host)
@@ -2721,12 +2814,15 @@ GetEmbedRect(host, &x, &y, &w, &h) {
     if host.hwnd && IsWindowExists(host.hwnd) {
         try {
             WinGetClientPos(,, &clientW, &clientH, "ahk_id " host.hwnd)
-            w := Max(200, clientW - (Config.HostPadding * 2))
-            if Config.TabPosition = "bottom"
-                h := Max(140, clientH - y - Config.HeaderHeight - padBottom)
-            else
-                h := Max(140, clientH - y - padBottom)
-            return
+            ; Guard: if WM_SIZE hasn't settled yet (window just shown), fall through to Config defaults
+            if clientW > 0 && clientH > 0 {
+                w := Max(200, clientW - (Config.HostPadding * 2))
+                if Config.TabPosition = "bottom"
+                    h := Max(140, clientH - y - Config.HeaderHeight - padBottom)
+                else
+                    h := Max(140, clientH - y - padBottom)
+                return
+            }
         }
     }
 
@@ -2881,34 +2977,15 @@ GetOwnerChain(hwnd) {
 
 ; Returns title from top window, or content window if top has no title.
 ; Falls back to process name for truly nameless windows (e.g. matched via Match1="").
+; Uses GetWindowTextW directly so it works even when topHwnd is hidden after embedding.
 GetPreferredTabTitle(record) {
-    title := SafeWinGetTitle(record.topHwnd)
+    title := GetWindowTitleDirect(record.topHwnd)
     if title != ""
         return title
-    title := SafeWinGetTitle(record.contentHwnd)
+    title := GetWindowTitleDirect(record.contentHwnd)
     if title != ""
         return title
     return record.HasProp("processName") ? record.processName : ""
-}
-
-; Briefly sets host to topmost then drops back to normal z-order.
-; This repositions the host above the app's dialogs without making it
-; permanently always-on-top. Uses SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-; so the window is not moved, resized, or focused.
-BumpHostToFront(host) {
-    if !host || !host.hwnd || !IsWindowExists(host.hwnd)
-        return
-    SWP_FLAGS := 0x0013  ; SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-    ; Step 1: set topmost (brings above all non-topmost windows)
-    DllCall("SetWindowPos", "ptr", host.hwnd,
-        "ptr", -1,       ; HWND_TOPMOST
-        "int", 0, "int", 0, "int", 0, "int", 0,
-        "uint", SWP_FLAGS)
-    ; Step 2: immediately drop topmost so it won't float above unrelated apps
-    DllCall("SetWindowPos", "ptr", host.hwnd,
-        "ptr", -2,       ; HWND_NOTOPMOST
-        "int", 0, "int", 0, "int", 0, "int", 0,
-        "uint", SWP_FLAGS)
 }
 
 ; Briefly sets host to topmost then drops back to normal z-order.
@@ -2941,17 +3018,16 @@ RedrawAnyWindow(hwnd) {
     DllCall("UpdateWindow", "ptr", hwnd)
 }
 
-; Timer callback: redraws active tab content and host after layout change.
+; Timer callback: re-attempts layout and redraws 50ms after ShowOnlyActiveTab.
+; Fixes blank content areas where the embedded window wasn't ready on the initial call
+; (common with WPF whose rendering pipeline needs time to settle after reparenting).
+; Passes scheduleDeferred=false to avoid scheduling another deferred check and looping.
 DeferredRepaintCheck(host, *) {
     if host.HasProp("deferredRepaintFn")
         host.deferredRepaintFn := ""
     if !host || !host.hwnd || !IsWindowExists(host.hwnd)
         return
-    if host.activeTabId != "" && host.tabRecords.Has(host.activeTabId) {
-        record := host.tabRecords[host.activeTabId]
-        if IsWindowExists(record.contentHwnd)
-            RedrawAnyWindow(record.contentHwnd)
-    }
+    ShowOnlyActiveTab(host, false)
     RedrawAnyWindow(host.hwnd)
 }
 
@@ -3170,10 +3246,21 @@ GetActiveStackTabsHost() {
 }
 
 ; WinGetTitle wrapper that returns "" on error.
+; Note: respects DetectHiddenWindows — use GetWindowTitleDirect for embedded (hidden) windows.
 SafeWinGetTitle(hwnd) {
     try return WinGetTitle("ahk_id " hwnd)
     catch
         return ""
+}
+
+; Reads window title via GetWindowTextW directly — works on hidden windows unlike WinGetTitle.
+; Use this for already-embedded tabs whose topHwnd has been hidden by StackTabs.
+GetWindowTitleDirect(hwnd) {
+    if !hwnd
+        return ""
+    buf := Buffer(1024, 0)
+    len := DllCall("GetWindowTextW", "ptr", hwnd, "ptr", buf, "int", 512, "int")
+    return len > 0 ? StrGet(buf) : ""
 }
 
 ; WinGetProcessName wrapper that returns "" on error.
@@ -3625,6 +3712,10 @@ ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics) {
     oldBmp := SendMessage(0x172, 0, hBmp,, "ahk_id " canvasCtrl.Hwnd)
     if oldBmp
         DllCall("DeleteObject", "UPtr", oldBmp)
+    ; Force immediate repaint — STM_SETIMAGE invalidates the control but WM_PAINT is deferred
+    ; until the message loop is free. UpdateWindow flushes it synchronously so the tab bar
+    ; pixels are updated right away instead of waiting for the next message loop cycle.
+    DllCall("UpdateWindow", "ptr", canvasCtrl.Hwnd)
 }
 
 OnTabCanvasMouseWheel(wParam, lParam, msg, hwnd) {
