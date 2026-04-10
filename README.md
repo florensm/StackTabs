@@ -21,6 +21,14 @@ If no match patterns are configured, the script prompts you and opens the config
 
 ---
 
+## Screenshots:
+With StackTabs
+<img width="3440" height="1440" alt="image" src="https://github.com/user-attachments/assets/c47aada2-dad5-48b4-adbe-2909b405a5f3" />
+
+Without StackTabs
+<img width="3440" height="1440" alt="image" src="https://github.com/user-attachments/assets/847c8976-c9d4-46f6-9a06-27438ba06979" />
+
+
 ## Hotkeys
 
 ### Global (anywhere)
@@ -236,7 +244,8 @@ Tab ID shape: `processName|rootOwner|normalizedTitle|contentClass` (see code com
 
 - Reparenting is **unsupported** for many apps by design; expect quirks with Chrome/Edge and some WPF/WinUI stacks.
 - Tab switches show/hide embedded HWNDs; repaint quality depends on the guest app.
-- If `config.ini.example` still lists options your build doesn’t read (e.g. legacy keys), trust **this README** and the `Config` / `LoadConfigFromIni` section in `StackTabs.ahk`.
+- Make sure to copy `config.ini.example` and rename it to `config.ini`
+- Some apps may not work, this script was made with a specific WPF based app in mind. 
 
 ---
 
