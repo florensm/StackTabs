@@ -1007,20 +1007,26 @@ CloseWindowReliably(topHwnd, contentHwnd := "") {
 
 ; Returns the client-area width of a window.
 GetClientWidth(hwnd) {
+    prev := DetectHiddenWindows(true)
     try {
         WinGetClientPos(,, &w,, "ahk_id " hwnd)
+        DetectHiddenWindows(prev)
         return w
     } catch {
+        DetectHiddenWindows(prev)
         return 0
     }
 }
 
 ; Returns the client-area height of a window.
 GetClientHeight(hwnd) {
+    prev := DetectHiddenWindows(true)
     try {
         WinGetClientPos(,,, &h, "ahk_id " hwnd)
+        DetectHiddenWindows(prev)
         return h
     } catch {
+        DetectHiddenWindows(prev)
         return 0
     }
 }
@@ -1143,6 +1149,10 @@ HostGuiClosed(host, *) {
         InvalidateHostsCache()
         if host.HasProp("iconHandle") && host.iconHandle
             DllCall("DestroyIcon", "ptr", host.iconHandle)
+        if host.HasProp("tabBarHBitmap") && host.tabBarHBitmap {
+            DllCall("DeleteObject", "UPtr", host.tabBarHBitmap)
+            host.tabBarHBitmap := 0
+        }
         host.gui.Destroy()
     } else {
         host.gui.Hide()
@@ -2279,15 +2289,23 @@ TransferTrackedWindow(sourceHost, destHost, tabId) {
     return true
 }
 
-; Positions tab bar controls and redraws the tab bar bitmap.
-; DrawTabBar reads its own dimensions and handles all control moves — no WM_SETREDRAW
-; suppression here so ApplyBitmapToCanvas → UpdateWindow takes effect immediately.
+; Repositions tab bar controls to match the current window size, then redraws.
+; Called on WM_SIZE and after theme changes. Separating positioning from drawing
+; avoids moving controls on every redraw (which can cause flicker).
 LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
     if !host || !host.gui || !host.hwnd || !IsWindowExists(host.hwnd)
         return
-    host.isLayingOut := true
+    w := windowWidth > 0 ? windowWidth : GetClientWidth(host.hwnd)
+    h := windowHeight > 0 ? windowHeight : GetClientHeight(host.hwnd)
+    if !w || !h
+        return
+    tabBarH := Config.HeaderHeight
+    tabBarY := (Config.TabPosition = "bottom") ? h - tabBarH : 0
+    if host.HasProp("tabBarBg") && host.tabBarBg
+        host.tabBarBg.Move(0, tabBarY, w, tabBarH)
+    if host.HasProp("tabCanvas") && host.tabCanvas
+        host.tabCanvas.Move(0, tabBarY, w, tabBarH)
     DrawTabBar(host)
-    host.isLayingOut := false
 }
 
 ; Sets active tab, shows its content, updates host title.
@@ -2547,9 +2565,6 @@ ShowOnlyActiveTab(host, scheduleDeferred := true) {
 
 DrawTabBar(host) {
 
-    alignHVal := (Config.TabTitleAlignH = "left") ? 0 : (Config.TabTitleAlignH = "right") ? 2 : 1
-    alignVVal := (Config.TabTitleAlignV = "top") ? 0 : (Config.TabTitleAlignV = "bottom") ? 2 : 1
-
     if !host.HasProp("tabCanvas") || !host.tabCanvas
         return
     if !host.hwnd || !IsWindowExists(host.hwnd)
@@ -2557,21 +2572,11 @@ DrawTabBar(host) {
 
     w := GetClientWidth(host.hwnd)
     h := GetClientHeight(host.hwnd)
-    if !w || !h {
-        ; Window not yet sized (e.g. just made visible) — retry shortly, same as GDI+ failure below
-        SetTimer(() => DrawTabBar(host), -50)
+    if !w || !h
         return
-    }
 
     tabBarW := w
     tabBarH := Config.HeaderHeight
-    tabBarY := 0
-    if Config.TabPosition = "bottom"
-        tabBarY := h - Config.HeaderHeight
-
-    if host.HasProp("tabBarBg") && host.tabBarBg
-        host.tabBarBg.Move(0, tabBarY, tabBarW, tabBarH)
-    host.tabCanvas.Move(0, tabBarY, tabBarW, tabBarH)
 
     GdipCreateOffscreenBitmap(tabBarW, tabBarH, &pBitmap, &pGraphics)
     if !pBitmap || !pGraphics {
@@ -2579,7 +2584,6 @@ DrawTabBar(host) {
             DllCall("gdiplus\GdipDeleteGraphics", "UPtr", pGraphics)
         if pBitmap
             DllCall("gdiplus\GdipDisposeImage", "UPtr", pBitmap)
-        SetTimer(() => DrawTabBar(host), -16)
         return
     }
 
@@ -2593,9 +2597,12 @@ DrawTabBar(host) {
 
     tabCount := host.tabOrder.Length
     if tabCount = 0 {
-        ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics, host)
+        ApplyBitmapToCanvas(host, pBitmap, pGraphics)
         return
     }
+
+    alignHVal := (Config.TabTitleAlignH = "left") ? 0 : (Config.TabTitleAlignH = "right") ? 2 : 1
+    alignVVal := (Config.TabTitleAlignV = "top") ? 0 : (Config.TabTitleAlignV = "bottom") ? 2 : 1
 
     arrowW := 24
     usableWidth := Max(200, tabBarW - (Config.HostPadding * 2))
@@ -2636,7 +2643,7 @@ DrawTabBar(host) {
             tabOffsetY := (tabBarH - Config.TabHeight) // 2
     }
 
-    ; Create three tab background brushes once (at most 3 distinct colors per redraw), reuse in loop, delete after
+    ; Create three tab background brushes once, reuse in loop, delete after
     pBrushActive := 0
     pBrushInactive := 0
     pBrushHover := 0
@@ -2656,7 +2663,7 @@ DrawTabBar(host) {
         iconColor := isActive ? HexToARGB(Config.ThemeTabActiveText)
                    :            HexToARGB(Config.ThemeIconColor)
 
-        ; Tab background with rounded corners (radius 5)
+        ; Tab background (rounded corners)
         GdipFillRoundRectWithBrush(pGraphics, x, tabOffsetY, tabWidth, Config.TabHeight, Config.TabCornerRadius, pTabBgBrush, HexToARGB(Config.ThemeTabBarBg))
 
         ; Active indicator strip
@@ -2667,8 +2674,6 @@ DrawTabBar(host) {
                 ? tabOffsetY
                 : tabOffsetY + Config.TabHeight - Config.TabIndicatorHeight
             indicW := Max(1, tabWidth - 8)
-            ; Radius must not exceed half the height — GDI+ arc math goes negative otherwise.
-            ; Use 0 (sharp rect) when indicator is thinner than 3px.
             indicR := (Config.TabIndicatorHeight >= 3) ? 1 : 0
             GdipFillRoundRect(pGraphics, x + 4, indicY, indicW, Config.TabIndicatorHeight, indicR, indicColor)
         }
@@ -2683,7 +2688,7 @@ DrawTabBar(host) {
             fgColor, Config.ThemeFontNameTab, Config.ThemeFontSize, isActive,
             true, true, alignHVal, alignVVal)
 
-        ; Popout / merge icon (only drawn if ShowPopoutButton)
+        ; Popout / merge icon
         if Config.ShowPopoutButton {
             iconText := host.isPopout ? Config.IconMerge : Config.IconPopout
             GdipDrawStringSimple(pGraphics, iconText,
@@ -2691,7 +2696,7 @@ DrawTabBar(host) {
                 iconColor, Config.ThemeIconFont, Config.ThemeIconFontSize, false)
         }
 
-        ; Close icon (only drawn if ShowCloseButton)
+        ; Close icon
         if Config.ShowCloseButton {
             GdipDrawStringSimple(pGraphics, Config.IconClose,
                 x + titleWidth + Config.PopoutButtonWidth, tabOffsetY,
@@ -2724,24 +2729,20 @@ DrawTabBar(host) {
         DllCall("gdiplus\GdipDeleteBrush", "UPtr", pSepBrush)
     }
 
-    ; Draw left scroll arrow only when can scroll left (tabScrollOffset > 0)
+    ; Scroll arrows
     if needScroll && host.tabScrollOffset > 0 {
-        arrowColor := HexToARGB(Config.ThemeTabActiveText)
         GdipDrawStringSimple(pGraphics, Chr(0xE76B),
             Config.HostPadding, tabOffsetY, arrowW, Config.TabHeight,
-            arrowColor, Config.ThemeIconFont, Config.ThemeIconFontSize, false)
+            HexToARGB(Config.ThemeTabActiveText), Config.ThemeIconFont, Config.ThemeIconFontSize, false)
     }
-
-    ; Draw right scroll arrow only when can scroll right (tabScrollOffset < tabScrollMax)
     if needScroll && host.tabScrollOffset < host.tabScrollMax {
-        arrowColor := HexToARGB(Config.ThemeTabActiveText)
         GdipDrawStringSimple(pGraphics, Chr(0xE76C),
             Config.HostPadding + arrowW + (drawEnd - drawStart + 1) * (tabWidth + Config.TabGap) - Config.TabGap,
             tabOffsetY, arrowW, Config.TabHeight,
-            arrowColor, Config.ThemeIconFont, Config.ThemeIconFontSize, false)
+            HexToARGB(Config.ThemeTabActiveText), Config.ThemeIconFont, Config.ThemeIconFontSize, false)
     }
 
-    ApplyBitmapToCanvas(host.tabCanvas, pBitmap, pGraphics, host)
+    ApplyBitmapToCanvas(host, pBitmap, pGraphics)
 }
 
 ; Updates host window title with tab count and active tab name.
@@ -2830,6 +2831,13 @@ CleanupAll(*) {
     }
 
     State.PendingCandidates := Map()
+    ; Release stored tab bar HBITMAPs
+    for host in GetAllHosts() {
+        if host.HasProp("tabBarHBitmap") && host.tabBarHBitmap {
+            DllCall("DeleteObject", "UPtr", host.tabBarHBitmap)
+            host.tabBarHBitmap := 0
+        }
+    }
     ; Release cached GDI+ font objects
     for _, pFamily in State.CachedFontFamily
         DllCall("gdiplus\GdipDeleteFontFamily", "UPtr", pFamily)
@@ -2979,9 +2987,11 @@ RedrawAnyWindow(hwnd) {
     if !hwnd || !IsWindowExists(hwnd)
         return
 
-    flags := 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400  ; INVALIDATE|ERASENOW|UPDATENOW|ALLCHILDREN|FRAME
+    ; RDW_UPDATENOW is intentionally omitted: it sends WM_PAINT directly to child WndProcs,
+    ; bypassing AHK's OnMessage hook. Without it, WM_PAINT is dispatched via the message loop
+    ; where OnTabCanvasPaint fires correctly.
+    flags := 0x0001 | 0x0004 | 0x0080 | 0x0400  ; INVALIDATE|ERASE|ALLCHILDREN|FRAME
     DllCall("RedrawWindow", "ptr", hwnd, "ptr", 0, "ptr", 0, "uint", flags)
-    DllCall("UpdateWindow", "ptr", hwnd)
 }
 
 ; Timer callback: re-attempts layout and redraws 50ms after ShowOnlyActiveTab.
@@ -3494,7 +3504,7 @@ OnTabCanvasRightClick(wParam, lParam, msg, hwnd) {
 }
 
 OnMessage(0x0006, OnWmActivate)   ; WM_ACTIVATE: re-focus embedded content when host regains focus
-OnMessage(0x000F, OnTabCanvasPaint)  ; WM_PAINT: BitBlt stored bitmap directly to canvas DC
+OnMessage(0x000F, OnTabCanvasPaint)   ; WM_PAINT: BitBlt stored bitmap to canvas DC on every repaint
 OnMessage(0x0200, OnTabCanvasMouseMove)
 OnMessage(0x0201, OnTabCanvasClick)
 OnMessage(0x0204, OnTabCanvasRightClick)
@@ -3671,56 +3681,61 @@ GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fon
     DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
 }
 
-; Stores the rendered HBITMAP on the host so OnTabCanvasPaint can BitBlt it on every WM_PAINT.
-; This replaces the old STM_SETIMAGE approach, which was unreliable because SS_BITMAP Static
-; controls don't guarantee a repaint when the image is set — they only paint on WM_PAINT, which
-; may never fire if no invalidation is queued. Handling WM_PAINT directly with BitBlt ensures
-; the correct content is always drawn regardless of what triggered the repaint.
-ApplyBitmapToCanvas(canvasCtrl, pBitmap, pGraphics, host := "") {
+; Stores the rendered HBITMAP on the host for OnTabCanvasPaint to BitBlt on every WM_PAINT.
+; Converts the GDI+ bitmap to an HBITMAP and stores it on the host for OnTabCanvasPaint.
+; More reliable than STM_SETIMAGE: the stored bitmap persists across any future WM_PAINT
+; (e.g. after another window uncovers the tab bar), so tabs always show correct content.
+ApplyBitmapToCanvas(host, pBitmap, pGraphics) {
     hBmp := GdipBitmapToHBITMAP(pBitmap)
     GdipCleanupBitmap(pBitmap, pGraphics)
     if !hBmp
         return
-    if host {
-        ; Delete the previous HBITMAP — we own it, the WM_PAINT handler only reads it.
-        if host.HasProp("tabBarHBitmap") && host.tabBarHBitmap
-            DllCall("DeleteObject", "UPtr", host.tabBarHBitmap)
-        host.tabBarHBitmap := hBmp
-    } else {
-        ; No host reference (shouldn't happen in normal flow) — fall back to STM_SETIMAGE.
-        oldBmp := SendMessage(0x172, 0, hBmp,, "ahk_id " canvasCtrl.Hwnd)
-        if oldBmp
-            DllCall("DeleteObject", "UPtr", oldBmp)
-    }
-    ; Invalidate and flush synchronously so the new bitmap appears immediately.
-    DllCall("InvalidateRect", "ptr", canvasCtrl.Hwnd, "ptr", 0, "int", false)
-    DllCall("UpdateWindow", "ptr", canvasCtrl.Hwnd)
+    ; Replace the stored bitmap (we own it; OnTabCanvasPaint only reads it)
+    if host.HasProp("tabBarHBitmap") && host.tabBarHBitmap
+        DllCall("DeleteObject", "UPtr", host.tabBarHBitmap)
+    host.tabBarHBitmap := hBmp
+    ; Mark the canvas dirty so WM_PAINT fires via the message loop.
+    ; Do NOT call UpdateWindow here — it bypasses AHK's OnMessage hook and calls the
+    ; STATIC control's default WndProc directly, which has no bitmap set and paints blank.
+    if host.HasProp("tabCanvas") && host.tabCanvas
+        DllCall("InvalidateRect", "ptr", host.tabCanvas.Hwnd, "ptr", 0, "int", false)
 }
 
-; WM_PAINT handler for the tab canvas: BitBlts the stored HBITMAP directly to the canvas DC.
-; Called for every WM_PAINT on any AHK window; returns 0 (suppress default) only for tab canvases.
+; WM_PAINT handler for tab canvas controls.
+; BitBlts the stored HBITMAP directly to the canvas DC so the tab bar always shows
+; the correct content — even after being uncovered by another window.
 OnTabCanvasPaint(wParam, lParam, msg, hwnd) {
     for host in GetAllHosts() {
         if !host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd
             continue
         ps := Buffer(64, 0)
         hdc := DllCall("BeginPaint", "ptr", hwnd, "ptr", ps, "ptr")
-        if hdc && host.HasProp("tabBarHBitmap") && host.tabBarHBitmap {
+        if hdc {
             rc := Buffer(16, 0)
             DllCall("GetClientRect", "ptr", hwnd, "ptr", rc)
-            w := NumGet(rc, 8, "int")
-            h := NumGet(rc, 12, "int")
-            memDC := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
-            old := DllCall("SelectObject", "ptr", memDC, "ptr", host.tabBarHBitmap, "ptr")
-            DllCall("BitBlt", "ptr", hdc, "int", 0, "int", 0, "int", w, "int", h,
-                "ptr", memDC, "int", 0, "int", 0, "uint", 0x00CC0020)  ; SRCCOPY
-            DllCall("SelectObject", "ptr", memDC, "ptr", old)
-            DllCall("DeleteDC", "ptr", memDC)
+            bmpW := NumGet(rc, 8, "int")
+            bmpH := NumGet(rc, 12, "int")
+            if host.HasProp("tabBarHBitmap") && host.tabBarHBitmap {
+                memDC := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+                old := DllCall("SelectObject", "ptr", memDC, "ptr", host.tabBarHBitmap, "ptr")
+                DllCall("BitBlt", "ptr", hdc, "int", 0, "int", 0, "int", bmpW, "int", bmpH,
+                    "ptr", memDC, "int", 0, "int", 0, "uint", 0x00CC0020)  ; SRCCOPY
+                DllCall("SelectObject", "ptr", memDC, "ptr", old)
+                DllCall("DeleteDC", "ptr", memDC)
+            } else {
+                ; Bitmap not ready yet — fill with the tab bar background color so there's no
+                ; flicker or garbage pixels visible before the first DrawTabBar completes.
+                hex := Config.ThemeTabBarBg  ; "RRGGBB"
+                clr := Integer("0x" SubStr(hex,1,2)) | (Integer("0x" SubStr(hex,3,2)) << 8) | (Integer("0x" SubStr(hex,5,2)) << 16)  ; COLORREF = R|G<<8|B<<16
+                hbr := DllCall("CreateSolidBrush", "uint", clr, "ptr")
+                DllCall("FillRect", "ptr", hdc, "ptr", rc, "ptr", hbr)
+                DllCall("DeleteObject", "ptr", hbr)
+            }
         }
         DllCall("EndPaint", "ptr", hwnd, "ptr", ps)
-        return 0  ; suppress default Static WM_PAINT
+        return 0  ; handled — suppress default Static WM_PAINT
     }
-    return ""
+    return ""  ; not our canvas — let Windows handle it
 }
 
 OnTabCanvasMouseWheel(wParam, lParam, msg, hwnd) {
