@@ -2535,13 +2535,6 @@ ShowOnlyActiveTab(host, scheduleDeferred := true) {
             , "int", areaX, "int", areaY, "int", areaW, "int", areaH
             , "uint", flags)
         DllCall("ShowWindow", "ptr", record.contentHwnd, "int", SW_SHOWNOACTIVATE)
-        ; Force the embedded window to paint immediately — it is a foreign-process window so
-        ; RDW_UPDATENOW (which dispatches WM_PAINT synchronously to the WndProc) is safe here
-        ; and prevents the white-content-area flash that occurs when the paint is only queued.
-        ; This is intentionally NOT done via RedrawAnyWindow, which omits RDW_UPDATENOW to
-        ; protect AHK's OnTabCanvasPaint hook on the tab canvas control.
-        DllCall("RedrawWindow", "ptr", record.contentHwnd, "ptr", 0, "ptr", 0
-            , "uint", 0x0001 | 0x0004 | 0x0100 | 0x0400)  ; INVALIDATE|ERASE|UPDATENOW|ALLCHILDREN
         activeHwnd := record.contentHwnd
         break
     }
@@ -3012,16 +3005,22 @@ DeferredRepaintCheck(host, *) {
         return
     ShowOnlyActiveTab(host, false)
     RedrawAnyWindow(host.hwnd)
-    ; Force-repaint the active embedded window directly with RDW_UPDATENOW.
-    ; RedrawAnyWindow omits UPDATENOW to protect AHK's OnTabCanvasPaint hook, but the
-    ; embedded content window is a foreign-process window where UPDATENOW is safe and
-    ; needed — without it the paint is only queued and may stay white if the process
-    ; hasn't had a chance to run its message loop yet.
+    ; Force-repaint the active embedded window via a secondary timer (20 ms from now).
+    ; We cannot call RDW_UPDATENOW inline here: it dispatches WM_PAINT cross-process via a
+    ; synchronous call, which causes AHK to pump its own message queue while waiting. If a
+    ; WM_PAINT for the tab canvas is pending at that moment (just queued by DrawTabBar above),
+    ; it would be handled by the default Static WndProc instead of OnTabCanvasPaint, corrupting
+    ; the tab bar. Scheduling 20 ms out lets the message loop drain the tab-canvas WM_PAINT
+    ; through OnTabCanvasPaint first, so UPDATENOW on the foreign window is safe.
     if host.activeTabId && host.tabRecords.Has(host.activeTabId) {
         activeRecord := host.tabRecords[host.activeTabId]
-        if IsWindowExists(activeRecord.contentHwnd)
-            DllCall("RedrawWindow", "ptr", activeRecord.contentHwnd, "ptr", 0, "ptr", 0
-                , "uint", 0x0001 | 0x0004 | 0x0100 | 0x0400)  ; INVALIDATE|ERASE|UPDATENOW|ALLCHILDREN
+        if IsWindowExists(activeRecord.contentHwnd) {
+            chw := activeRecord.contentHwnd
+            SetTimer(() => (IsWindowExists(chw)
+                ? DllCall("RedrawWindow", "ptr", chw, "ptr", 0, "ptr", 0
+                    , "uint", 0x0001 | 0x0004 | 0x0100 | 0x0400)  ; INVALIDATE|ERASE|UPDATENOW|ALLCHILDREN
+                : 0), -20)
+        }
     }
 }
 
