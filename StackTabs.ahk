@@ -2323,9 +2323,15 @@ SelectTab(host, tabId, *) {
     if !host.tabRecords.Has(tabId)
         return
 
+    ; When the switcher preview already landed on this tab, SwitcherActivate -> SelectTab
+    ; would otherwise run a third full ShowOnlyActiveTab within ~100ms. Skip the redundant
+    ; layout work but still focus the embedded content so typing lands correctly on commit.
+    alreadyActive := (host.activeTabId = tabId)
     host.activeTabId := tabId
-    ShowOnlyActiveTab(host)
-    UpdateHostTitle(host)
+    if !alreadyActive {
+        ShowOnlyActiveTab(host)
+        UpdateHostTitle(host)
+    }
     if IsWindowExists(host.tabRecords[tabId].contentHwnd)
         FocusEmbeddedContent(host.hwnd, host.tabRecords[tabId].contentHwnd)
 }
