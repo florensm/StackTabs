@@ -39,6 +39,7 @@ HostHeight=800
 HostMinWidth=700
 HostMinHeight=500
 HostPadding=8                  ; Padding around the tab bar (left/right/top).
+ShowOnlyWhenTabs=1             ; 1 = hide to tray when there are zero tabs; 0 = always show host.
 
 ; --- Tab bar ---
 HeaderHeight=36                ; Height of the tab bar strip in pixels.
