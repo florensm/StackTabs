@@ -100,7 +100,6 @@ Boolean options use **`0`** or **`1`**.
 | `HostMinWidth` / `HostMinHeight` | `700` / `500` | Minimum host size in pixels. |
 | `HostPadding` | `8` | Inset in pixels: trims **left/right** of the tab strip and embedded client; also sets the **vertical gap** between the tab bar and the client (`GetEmbedRect` in `StackTabs.ahk`). |
 | `HostPaddingBottom` | `-1` | Bottom padding; **`-1`** means “use `HostPadding`”. |
-| `ShowOnlyWhenTabs` | `1` | `1` = hide the main host when it has zero tabs and show it when at least one tab exists. `0` = keep the main host visible even when empty. |
 | `HeaderHeight` | `36` | Tab bar strip height in pixels. |
 | `TabPosition` | `top` | `top` or `bottom`. |
 | `TabBarAlignment` | `center` | Vertical placement of tabs inside the bar: `top`, `center`, or `bottom`. |
@@ -166,7 +165,6 @@ HostHeight=800
 HostMinWidth=700
 HostMinHeight=500
 HostPadding=8
-ShowOnlyWhenTabs=1
 HeaderHeight=36
 TabPosition=top
 TabBarAlignment=center

@@ -56,7 +56,6 @@ Config := {
     TabIndicatorHeight: 3,  ; height in px of the active-tab indicator strip; 0 to disable
     TabCornerRadius: 5,
     ActiveTabStyle: "full",  ; "full" = active tab has different bg; "indicator" = only indicator strip, same bg as inactive
-    ShowOnlyWhenTabs: true,  ; when true, hide host when there are 0 tabs and show when 1+ tabs exist
     KeepAboveTabApps: false,   ; Keep host above any window in a tracked tab's process whenever that process takes foreground, and reparent its dialogs to the host so they stay above it via the OS owner rule
     KeepAboveTabAppsDebug: false,  ; Verbose z-order trace to debug-zorder.log (paired with KeepAboveTabApps)
 
@@ -211,7 +210,6 @@ LoadConfigFromIni() {
         Config.TabCornerRadius := Integer(IniRead(iniPath, "Layout", "TabCornerRadius", "5"))
         Config.TabSeparatorWidth := Integer(IniRead(iniPath, "Layout", "TabSeparatorWidth", "0"))
         Config.ActiveTabStyle := Trim(IniRead(iniPath, "Layout", "ActiveTabStyle", "full"))
-        Config.ShowOnlyWhenTabs := IniBool(iniPath, "Layout", "ShowOnlyWhenTabs", Config.ShowOnlyWhenTabs)
     }
     ; Load match patterns from [General] Match1/Match2/...
     Config.WindowTitleMatches := []
@@ -377,16 +375,16 @@ UpdateTrayTip() {
     try A_IconTip := tip
 }
 
-; Tray / menu: show the main host, clear hide-to-tray flags, optionally keep empty host
-; visible when ShowOnlyWhenTabs is on (until a tab is stacked or the user closes from the caption).
+; Tray / menu: show the main host and clear hide-to-tray flags. No-op when there are no tabs
+; — the host is empty anyway and auto-hides when the tab count reaches zero.
 ShowMainHostFromTray(*) {
     if !State.MainHost || !State.MainHost.gui || !IsWindowExists(State.MainHost.hwnd)
         return
     mh := State.MainHost
+    if mh.tabOrder.Length = 0
+        return
     mh.dismissedByClose := false
     mh.hiddenByUserToggle := false
-    if Config.ShowOnlyWhenTabs && mh.tabOrder.Length = 0
-        mh.showEmptyWhileIdle := true
     mh.gui.Show()
     UpdateMainHostVisibilityPolicy()
     LayoutTabButtons(mh)
@@ -983,7 +981,7 @@ SwitcherCtrlRelease() {
         State.MainHost.hiddenByUserToggle := true
         State.MainHost.gui.Hide()
     } else {
-        if Config.ShowOnlyWhenTabs && GetLiveTabCount(State.MainHost) = 0
+        if GetLiveTabCount(State.MainHost) = 0
             return
         State.MainHost.dismissedByClose := false
         State.MainHost.hiddenByUserToggle := false
@@ -1186,8 +1184,6 @@ BuildHostInstance(isPopout := false) {
         host.dismissedByClose := false
         ; Win+Shift+T hide: do not auto-resurface on RefreshWindows until user shows again or a tab is stacked.
         host.hiddenByUserToggle := false
-        ; Tray "Show window" with zero tabs: keep host visible until a tab exists or user closes from caption.
-        host.showEmptyWhileIdle := false
     }
     host.tabRecords := Map()
     host.tabOrder := []
@@ -1226,12 +1222,11 @@ BuildHostInstance(isPopout := false) {
     host.clientHwnd := host.hwnd
     State.HostByHwnd[host.hwnd ""] := host
     showOpts := "w" Config.HostWidth " h" Config.HostHeight
-    ; Popouts are created invisibly and shown after the first tab attaches.
+    ; Host is created invisibly and shown after the first tab attaches.
     ; Show() followed immediately by Hide() briefly makes the window visible to the OS,
     ; which causes tiling window managers to tile it as a floating window on first use.
     ; Passing Hide to Show() sets the size without ever showing the window.
-    if isPopout || (!isPopout && Config.ShowOnlyWhenTabs)
-        showOpts .= " Hide"
+    showOpts .= " Hide"
     host.gui.Show(showOpts)
 
     ; Request Windows 11 rounded corners (no-op if already applied by system)
@@ -1253,9 +1248,9 @@ MainHostIsWindowVisible() {
     return DllCall("IsWindowVisible", "ptr", State.MainHost.hwnd, "int")
 }
 
-; Keeps main host visibility in sync with ShowOnlyWhenTabs and live tab count.
-; When ShowOnlyWhenTabs is off, the empty host must still be shown — it is created hidden
-; (same as popouts) to avoid tiling WM first-paint quirks, then surfaced here.
+; Keeps main host visibility in sync with tab count. Policy: empty host = hidden, stacked host
+; = visible (unless user dismissed via X or Win+Shift+T). The host is created hidden to avoid
+; tiling WM first-paint quirks; the first stacked tab surfaces it.
 UpdateMainHostVisibilityPolicy() {
     if !State.MainHost || !State.MainHost.hwnd || !IsWindowExists(State.MainHost.hwnd)
         return
@@ -1264,30 +1259,16 @@ UpdateMainHostVisibilityPolicy() {
     ; Use tab count, not live HWND checks: during attach/reparent the client HWND can briefly
     ; look "dead" to IsWindow while we still have a real tab — live=0 would incorrectly Hide().
     hasTabs := State.MainHost.tabOrder.Length >= 1
-    if hasTabs
-        State.MainHost.showEmptyWhileIdle := false
+    if !hasTabs {
+        State.MainHost.gui.Hide()
+        return
+    }
     dismissed := State.MainHost.HasProp("dismissedByClose") && State.MainHost.dismissedByClose
     toggleHidden := State.MainHost.HasProp("hiddenByUserToggle") && State.MainHost.hiddenByUserToggle
-    if Config.ShowOnlyWhenTabs {
-        if !hasTabs {
-            if State.MainHost.HasProp("showEmptyWhileIdle") && State.MainHost.showEmptyWhileIdle {
-                if !MainHostIsWindowVisible()
-                    State.MainHost.gui.Show("NoActivate")
-                return
-            }
-            State.MainHost.gui.Hide()
-            return
-        }
-        if dismissed || toggleHidden
-            return
-        if !MainHostIsWindowVisible()
-            State.MainHost.gui.Show("NoActivate")
-    } else {
-        if dismissed || toggleHidden
-            return
-        if !MainHostIsWindowVisible()
-            State.MainHost.gui.Show("NoActivate")
-    }
+    if dismissed || toggleHidden
+        return
+    if !MainHostIsWindowVisible()
+        State.MainHost.gui.Show("NoActivate")
 }
 
 ; Handles host close: restores tabs to main (popout) or hides main host (keeps script running).
@@ -1314,7 +1295,6 @@ HostGuiClosed(host, *) {
         host.gui.Destroy()
     } else {
         host.dismissedByClose := true
-        host.showEmptyWhileIdle := false
         host.gui.Hide()
         return true  ; Prevent default close (keep script running in tray)
     }
@@ -1471,7 +1451,6 @@ WatchdogPostStackUpdate(*) {
     if State.MainHost.tabOrder.Length >= 1 {
         State.MainHost.dismissedByClose := false
         State.MainHost.hiddenByUserToggle := false
-        State.MainHost.showEmptyWhileIdle := false
         UpdateHostTitle(State.MainHost)
         ; First appearance may activate intentionally; later visibility is handled by UpdateMainHostVisibilityPolicy.
         if !MainHostIsWindowVisible()
@@ -1685,7 +1664,7 @@ OnWindowDestroyed(hwnd) {
                 ShowOnlyActiveTab(host)
                 UpdateHostTitle(host)
                 RedrawAnyWindow(host.hwnd)
-                if State.MainHost && host = State.MainHost && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 0
+                if State.MainHost && host = State.MainHost && host.tabOrder.Length = 0
                     State.MainHost.gui.Hide()
                 ; Destroy empty popout — CloseTabDeferredUpdate handles this for StackTabs-initiated
                 ; closes, but external window closes bypass that path and leave a blank popout visible.
@@ -2230,7 +2209,7 @@ CloseTab(host, tabId) {
     topHwnd := record.topHwnd
     contentHwnd := record.contentHwnd
     ; Hide host immediately when closing the last tab — close handling can block briefly.
-    if !host.isPopout && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 1
+    if !host.isPopout && host.tabOrder.Length = 1
         host.gui.Hide()
     ; Close before detach - window may process close better while still embedded
     CloseWindowReliably(topHwnd, contentHwnd)
@@ -2295,8 +2274,8 @@ RemoveTrackedTab(host, tabId, restoreWindow := true) {
     else if host.activeTabId = tabId
         host.activeTabId := ""
 
-    ; When ShowOnlyWhenTabs is on and main host now has 0 tabs, hide immediately.
-    if !host.isPopout && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 0
+    ; Main host with 0 tabs hides immediately (empty host never lingers).
+    if !host.isPopout && host.tabOrder.Length = 0
         host.gui.Hide()
 }
 
@@ -2313,7 +2292,7 @@ ReEmbedTab(host, tabId, *) {
     ; HostGuiResized(minMax=0) will call ShowOnlyActiveTab when the user restores the host.
     if !IsWindowExists(host.hwnd) || DllCall("IsIconic", "ptr", host.hwnd, "int")
         return
-    if Config.ShowOnlyWhenTabs && !WinExist("ahk_id " host.hwnd)
+    if !WinExist("ahk_id " host.hwnd)
         host.gui.Show()
     if IsWindowExists(record.contentHwnd) {
         if DllCall("GetParent", "ptr", record.contentHwnd, "ptr") != host.clientHwnd
