@@ -39,7 +39,7 @@ Without StackTabs
 
 | Hotkey | Action |
 |--------|--------|
-| `Win+Shift+T` | Show or hide the main host. If **Show only when tabs** is enabled, an empty host stays hidden. |
+| `Win+Shift+T` | Toggle the main host: **hide** when that window is active, **show** when it is hidden (or not in the foreground). |
 | `Win+Shift+D` | Append a discovery dump to `discovery.txt` *(only when `DebugDiscovery=1` in `[General]`)* |
 
 ### When the StackTabs host or embedded content is focused
@@ -98,8 +98,9 @@ Boolean options use **`0`** or **`1`**.
 | `HostTitle` | `StackTabs` | Host window title (and tray name base). |
 | `HostWidth` / `HostHeight` | `1200` / `800` | Initial size in pixels. |
 | `HostMinWidth` / `HostMinHeight` | `700` / `500` | Minimum host size in pixels. |
-| `HostPadding` | `8` | Inner padding (pixels) around the host chrome. |
+| `HostPadding` | `8` | Inset in pixels: trims **left/right** of the tab strip and embedded client; also sets the **vertical gap** between the tab bar and the client (`GetEmbedRect` in `StackTabs.ahk`). |
 | `HostPaddingBottom` | `-1` | Bottom padding; **`-1`** means “use `HostPadding`”. |
+| `ShowOnlyWhenTabs` | `1` | `1` = hide the main host when it has zero tabs and show it when at least one tab exists. `0` = keep the main host visible even when empty. |
 | `HeaderHeight` | `36` | Tab bar strip height in pixels. |
 | `TabPosition` | `top` | `top` or `bottom`. |
 | `TabBarAlignment` | `center` | Vertical placement of tabs inside the bar: `top`, `center`, or `bottom`. |
@@ -114,7 +115,7 @@ Boolean options use **`0`** or **`1`**.
 | `TabTitleMaxLen` | `9999` | Character cap for tab labels. **`9999`** (or omit) behaves as “no fixed cap”; width-based truncation still applies. |
 | `TabMaxLines` | `1` | `1` = single line with ellipsis; **`2`** or more enables wrapping (increase `TabHeight` so text fits). |
 | `TabTitleAlignH` | `center` | `left`, `center`, or `right`. |
-| `TabTitleAlignV` | `center` | `top`, `center`, or `bottom`. When `TabMaxLines` is 2 or more, vertical alignment follows the wrapped layout. |
+| `TabTitleAlignV` | `center` | `top`, `center`, or `bottom` for single-line tabs. When **`TabMaxLines` ≥ 2**, the renderer **forces top** alignment so wrapped titles are not clipped. |
 | `ShowTabNumbers` | `0` | `1` = prefix titles with `1.`, `2.`, … |
 | `ShowCloseButton` | `1` | `1` = show the per-tab close button. |
 | `ShowPopoutButton` | `1` | `1` = show the pop-out (detach) button. |
@@ -127,7 +128,7 @@ Theme files under `themes\` can override many of these same layout keys for the 
 |-----|--------------------------|-------------|
 | `ThemeFile` | `dark.ini` | Filename under **`themes\`** (tray menu **Theme**). If the file is missing, StackTabs falls back to **`themes\dark.ini`**. |
 
-Shipped presets include **`dark.ini`**, **`spacious.ini`**, **`tmux.ini`**, **`ember.ini`**, **`fjord.ini`**, **`paper.ini`**, and **`nocturne.ini`**. Add your own `.ini` next to them or under **`themes\custom\`**.
+Shipped presets: **`dark.ini`** (fallback), **`spacious.ini`**, **`tmux.ini`**, plus **`obsidian.ini`**, **`ink.ini`**, **`silk.ini`**, and **`clay.ini`**. Add your own `.ini` next to them or under **`themes\custom\`** ([themes/README.md](themes/README.md)).
 
 ### `[TitleFilters]`
 
@@ -165,6 +166,7 @@ HostHeight=800
 HostMinWidth=700
 HostMinHeight=500
 HostPadding=8
+ShowOnlyWhenTabs=1
 HeaderHeight=36
 TabPosition=top
 TabBarAlignment=center

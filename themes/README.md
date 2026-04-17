@@ -1,6 +1,6 @@
 # StackTabs Themes
 
-Theme files are `.ini` files. Place them in `themes\` or `themes\custom\`. Switch themes from the tray menu: right-click the StackTabs icon, **Theme**, choose a theme. Shipped examples include `dark.ini` (also the runtime fallback when `ThemeFile` is missing), `spacious.ini`, `tmux.ini`, and the extra presets `ember.ini`, `fjord.ini`, `paper.ini`, `nocturne.ini`.
+Theme files are `.ini` files. Place them in `themes\` or `themes\custom\`. Switch themes from the tray menu: right-click the StackTabs icon, **Theme**, choose a theme. Shipped examples include `dark.ini` (runtime fallback when `ThemeFile` is missing), `spacious.ini`, `tmux.ini`, and `obsidian.ini`, `ink.ini`, `silk.ini`, `clay.ini`.
 
 ## [Theme] Section
 
@@ -39,7 +39,7 @@ Themes can include a `[Layout]` section to override spacing and tab dimensions. 
 |-----|---------|-------------|
 | `HostPadding` | `8` | Padding around content (px) |
 | `HostPaddingBottom` | `-1` | Bottom padding (px). `-1` = use `HostPadding` (same on all sides). Set only when you want different bottom padding. |
-| `HeaderHeight` | `44` | Tab bar height (px) |
+| `HeaderHeight` | `36` | Tab bar height (px); matches script default when not set in `config.ini` |
 | `TabGap` | `6` | Gap between tabs (px) |
 | `MinTabWidth` | `120` | Minimum tab width (px) |
 | `MaxTabWidth` | `240` | Maximum tab width (px) |
@@ -55,7 +55,7 @@ Themes can include a `[Layout]` section to override spacing and tab dimensions. 
 | `TabTitleMaxLen` | *(omit)* | Optional. Omit for fully dynamic (fits tab width, works for 1 or 2 lines). Set to cap titles shorter. |
 | `TabMaxLines` | `1` | `1` = single line with ellipsis; `2` = word-wrap to second line. |
 | `TabTitleAlignH` | `center` | Horizontal text alignment: `left`, `center`, `right` |
-| `TabTitleAlignV` | `center` | Vertical text alignment: `top`, `center`. Ignored when TabMaxLines>=2. |
+| `TabTitleAlignV` | `center` | Vertical text alignment: `top`, `center`, `bottom`. When **`TabMaxLines` ≥ 2**, the host forces **top** alignment when drawing wrapped titles. |
 | `ShowTabNumbers` | `0` | `1` = prefix titles with position (e.g. "1. Title", "2. Title") |
 | `ShowCloseButton` | `1` | `1` = show per-tab close control |
 | `ShowPopoutButton` | `1` | `1` = show pop-out (detach) control |
@@ -93,7 +93,7 @@ ActiveTabStyle=indicator
 
 ## Creating a Theme
 
-1. Copy an existing theme (e.g. `dark.ini`, `paper.ini`, `fjord.ini`, or `tmux.ini`)
+1. Copy an existing theme (e.g. `dark.ini`, `silk.ini`, `obsidian.ini`, or `tmux.ini`)
 2. Rename the file (e.g. `my-theme.ini`)
 3. Edit colors and optionally add `[Layout]` overrides
 4. Restart StackTabs or switch themes from the tray menu
