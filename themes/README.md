@@ -1,6 +1,6 @@
 # StackTabs Themes
 
-Theme files are `.ini` files. Place them in `themes\` or `themes\custom\`. Switch themes from the tray menu: right-click the StackTabs icon, **Theme**, choose a theme.
+Theme files are `.ini` files. Place them in `themes\` or `themes\custom\`. Switch themes from the tray menu: right-click the StackTabs icon, **Theme**, choose a theme. Shipped examples include `dark.ini` (also the runtime fallback when `ThemeFile` is missing), `spacious.ini`, `tmux.ini`, and the extra presets `ember.ini`, `fjord.ini`, `paper.ini`, `nocturne.ini`.
 
 ## [Theme] Section
 
@@ -19,6 +19,7 @@ Colors are hex RGB without `#` (e.g. `1C1C2E`).
 | `IconColor` | `6878B0` | Close and pop-out button icon color |
 | `ContentBorder` | `35355A` | Border around embedded window area |
 | `WindowText` | `E0E8FF` | General window text (e.g. title bar) |
+| `TabSeparatorColor` | *(omit)* | Color of vertical tab separators when `TabSeparatorWidth` is non-zero in `[Layout]` |
 
 ### Fonts
 
@@ -46,9 +47,9 @@ Themes can include a `[Layout]` section to override spacing and tab dimensions. 
 | `CloseButtonWidth` | `22` | Close button width (px) |
 | `PopoutButtonWidth` | `22` | Pop-out button width (px) |
 | `TabBarAlignment` | `center` | Tab alignment within bar: `top`, `center`, or `bottom` |
-| `TabBarOffsetY` | *(legacy)* | Pixel offset (overrides alignment when set). Prefer `TabBarAlignment`. |
 | `TabIndicatorHeight` | `3` | Active tab indicator strip height (px). Use `0` to disable. |
 | `TabCornerRadius` | `5` | Tab corner radius (px). Use `0` for sharp corners. |
+| `TabSeparatorWidth` | `0` | Width in px of vertical lines between tabs; pair with `TabSeparatorColor` in `[Theme]` |
 | `ActiveTabStyle` | `full` | `full` = active tab has different background; `indicator` = only the strip, same bg as inactive |
 | `TabPosition` | `top` | Tab bar position: `top` or `bottom` |
 | `TabTitleMaxLen` | *(omit)* | Optional. Omit for fully dynamic (fits tab width, works for 1 or 2 lines). Set to cap titles shorter. |
@@ -56,6 +57,8 @@ Themes can include a `[Layout]` section to override spacing and tab dimensions. 
 | `TabTitleAlignH` | `center` | Horizontal text alignment: `left`, `center`, `right` |
 | `TabTitleAlignV` | `center` | Vertical text alignment: `top`, `center`. Ignored when TabMaxLines>=2. |
 | `ShowTabNumbers` | `0` | `1` = prefix titles with position (e.g. "1. Title", "2. Title") |
+| `ShowCloseButton` | `1` | `1` = show per-tab close control |
+| `ShowPopoutButton` | `1` | `1` = show pop-out (detach) control |
 
 ## Example
 
@@ -90,7 +93,7 @@ ActiveTabStyle=indicator
 
 ## Creating a Theme
 
-1. Copy an existing theme (e.g. `dark.ini` or `light.ini`)
+1. Copy an existing theme (e.g. `dark.ini`, `paper.ini`, `fjord.ini`, or `tmux.ini`)
 2. Rename the file (e.g. `my-theme.ini`)
 3. Edit colors and optionally add `[Layout]` overrides
 4. Restart StackTabs or switch themes from the tray menu

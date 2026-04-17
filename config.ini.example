@@ -40,9 +40,6 @@ HostMinWidth=700
 HostMinHeight=500
 HostPadding=8                  ; Padding around the tab bar (left/right/top).
 
-; --- Host behavior ---
-ShowOnlyWhenTabs=1             ; 1 = hide to tray when no tabs; show when 1+ tabs. 0 = always show.
-
 ; --- Tab bar ---
 HeaderHeight=36                ; Height of the tab bar strip in pixels.
 TabPosition=top                ; top or bottom.
@@ -68,9 +65,8 @@ TabTitleAlignV=center          ; Vertical text alignment: top, center, bottom. F
 ShowTabNumbers=0               ; 1 = prefix titles with position: "1. Title", "2. Title", etc.
 
 [Theme]
-; Theme file from the themes\ folder.
-; Available: dark.ini, light.ini, spacious.ini, spacious-dark.ini, compact.ini,
-;            bottom-tabs.ini, high-contrast.ini, minimal.ini, numbered.ini, tmux.ini
+; Theme file from the themes\ folder. Shipped: dark.ini, spacious.ini, tmux.ini, ember.ini, fjord.ini, paper.ini, nocturne.ini.
+; Custom themes: add .ini files next to those or under themes\custom\.
 ThemeFile=dark.ini
 
 [TitleFilters]

@@ -52,12 +52,10 @@ Config := {
     CloseButtonWidth: 22,
     PopoutButtonWidth: 22,
     TabBarAlignment: "center",  ; top, center, or bottom — tabs aligned within the tab bar
-    TabBarOffsetY: -1,         ; legacy: -1 = use alignment; >=0 = use as pixel offset (overrides alignment)
     TabPosition: "top",    ; "top" or "bottom"
     TabIndicatorHeight: 3,  ; height in px of the active-tab indicator strip; 0 to disable
     TabCornerRadius: 5,
     ActiveTabStyle: "full",  ; "full" = active tab has different bg; "indicator" = only indicator strip, same bg as inactive
-    ShowOnlyWhenTabs: true,  ; when true, show host only when 1+ tabs; hide to tray when 0 (default). Set to 0 to always show host.
     KeepAboveTabApps: false,   ; Keep host above any window in a tracked tab's process whenever that process takes foreground, and reparent its dialogs to the host so they stay above it via the OS owner rule
     KeepAboveTabAppsDebug: false,  ; Verbose z-order trace to debug-zorder.log (paired with KeepAboveTabApps)
 
@@ -200,7 +198,6 @@ LoadConfigFromIni() {
         Config.PopoutButtonWidth := Integer(IniRead(iniPath, "Layout", "PopoutButtonWidth", Config.PopoutButtonWidth))
         rawAlign := IniRead(iniPath, "Layout", "TabBarAlignment", "")
         Config.TabBarAlignment := (rawAlign != "") ? Trim(rawAlign) : "center"
-        Config.TabBarOffsetY := Integer(IniRead(iniPath, "Layout", "TabBarOffsetY", "-1"))  ; legacy: -1 = use alignment
         Config.TabTitleMaxLen := Integer(Trim(StrSplit(IniRead(iniPath, "Layout", "TabTitleMaxLen", "9999"), ";")[1]))
         Config.TabMaxLines := Max(1, Integer(Trim(StrSplit(IniRead(iniPath, "Layout", "TabMaxLines", Config.TabMaxLines), ";")[1])))
         Config.TabTitleAlignH := Trim(StrSplit(IniRead(iniPath, "Layout", "TabTitleAlignH", Config.TabTitleAlignH), ";")[1])
@@ -213,10 +210,6 @@ LoadConfigFromIni() {
         Config.TabCornerRadius := Integer(IniRead(iniPath, "Layout", "TabCornerRadius", "5"))
         Config.TabSeparatorWidth := Integer(IniRead(iniPath, "Layout", "TabSeparatorWidth", "0"))
         Config.ActiveTabStyle := Trim(IniRead(iniPath, "Layout", "ActiveTabStyle", "full"))
-        ; ShowOnlyWhenTabs: show host only when 1+ tabs; hide to tray when 0 (default). Fallback for old config keys.
-        rawVal := IniRead(iniPath, "Layout", "ShowOnlyWhenTabs", IniRead(iniPath, "Layout", "KeepHostAlive", IniRead(iniPath, "Layout", "HideHostWhenEmpty", "1")))
-        ; Strip inline comment (; ...) and trim so "1   ; comment" parses as 1
-        Config.ShowOnlyWhenTabs := (Trim(StrSplit(rawVal, ";")[1]) = "1")
     }
     ; Load match patterns from [General] Match1/Match2/...
     Config.WindowTitleMatches := []
@@ -282,9 +275,6 @@ LoadThemeFromFile(themePath) {
     ; TabBarAlignment: when theme doesn't specify, read from config so we don't carry over previous theme's value
     rawAlign := IniRead(themePath, "Layout", "TabBarAlignment", "")
     Config.TabBarAlignment := (rawAlign != "") ? Trim(rawAlign) : IniRead(Config.ConfigPath, "Layout", "TabBarAlignment", "center")
-    rawOffset := IniRead(themePath, "Layout", "TabBarOffsetY", "")
-    if rawOffset != ""
-        Config.TabBarOffsetY := Integer(rawOffset)
     Config.TabIndicatorHeight := Integer(IniRead(themePath, "Layout", "TabIndicatorHeight", String(Config.TabIndicatorHeight)))
     Config.TabCornerRadius := Integer(IniRead(themePath, "Layout", "TabCornerRadius", String(Config.TabCornerRadius)))
     Config.TabSeparatorWidth := Integer(IniRead(themePath, "Layout", "TabSeparatorWidth", String(Config.TabSeparatorWidth)))
@@ -942,9 +932,6 @@ SwitcherCtrlRelease() {
     if IsWindowExists(State.MainHost.hwnd) && WinActive("ahk_id " State.MainHost.hwnd)
         State.MainHost.gui.Hide()
     else {
-        ; When ShowOnlyWhenTabs: only show if we have tabs
-        if Config.ShowOnlyWhenTabs && GetLiveTabCount(State.MainHost) = 0
-            return
         State.MainHost.gui.Show()
         ShowOnlyActiveTab(State.MainHost)
     }
@@ -1175,11 +1162,11 @@ BuildHostInstance(isPopout := false) {
     host.clientHwnd := host.hwnd
     State.HostByHwnd[host.hwnd ""] := host
     showOpts := "w" Config.HostWidth " h" Config.HostHeight
-    ; Always pass Hide when the window should not be visible yet.
+    ; Popouts are created invisibly and shown after the first tab attaches.
     ; Show() followed immediately by Hide() briefly makes the window visible to the OS,
     ; which causes tiling window managers to tile it as a floating window on first use.
     ; Passing Hide to Show() sets the size without ever showing the window.
-    if isPopout || (!isPopout && Config.ShowOnlyWhenTabs)
+    if isPopout
         showOpts .= " Hide"
     host.gui.Show(showOpts)
 
@@ -1366,19 +1353,10 @@ WatchdogCheck(*) {
     }
 }
 
-; Deferred update after stacking: show host if needed, layout tabs, refresh content.
+; Deferred update after stacking: layout tabs, refresh content.
 WatchdogPostStackUpdate(*) {
     if !State.MainHost
         return
-    ; Only call Show when the window is actually hidden — avoids repositioning an already-visible window
-    if Config.ShowOnlyWhenTabs && State.MainHost.tabOrder.Length >= 1 {
-        if !(GetWindowLongPtrValue(State.MainHost.hwnd, -16) & 0x10000000) {  ; WS_VISIBLE
-            ; Set title before Show so tiling WMs (e.g. GlazeWM) see the correct title on EVENT_OBJECT_SHOW
-            UpdateHostTitle(State.MainHost)
-            State.MainHost.gui.Show()  ; Show() activates by default; intentional for first appearance
-        }
-        ; If already visible don't force-activate — user may have focus elsewhere
-    }
     LayoutTabButtons(State.MainHost)
     ShowOnlyActiveTab(State.MainHost)
     UpdateHostTitle(State.MainHost)
@@ -1586,8 +1564,6 @@ OnWindowDestroyed(hwnd) {
                 ShowOnlyActiveTab(host)
                 UpdateHostTitle(host)
                 RedrawAnyWindow(host.hwnd)
-                if State.MainHost && host = State.MainHost && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 0
-                    State.MainHost.gui.Hide()
                 ; Destroy empty popout — CloseTabDeferredUpdate handles this for StackTabs-initiated
                 ; closes, but external window closes bypass that path and leave a blank popout visible.
                 if host.isPopout && host.tabOrder.Length = 0 {
@@ -1618,7 +1594,6 @@ RefreshWindows(*) {
 
     ; Update all hosts: keep tabs alive, check for stale tabs
     for host in GetAllHosts() {
-        ; Use IsWindow: WinExist returns 0 for hidden windows; host may be hidden when ShowOnlyWhenTabs
         if !IsWindowExists(host.hwnd)
             continue
 
@@ -1733,20 +1708,6 @@ RefreshWindows(*) {
             ShowOnlyActiveTab(host)
         }
         UpdateHostTitle(host)
-    }
-
-    ; When ShowOnlyWhenTabs: hide when 0 tabs, show when 1+ tabs (only if hidden).
-    if Config.ShowOnlyWhenTabs && State.MainHost && IsWindowExists(State.MainHost.hwnd) {
-        liveCount := 0
-        for tabId in State.MainHost.tabOrder {
-            if State.MainHost.tabRecords.Has(tabId) && IsWindowExists(State.MainHost.tabRecords[tabId].contentHwnd)
-                liveCount++
-        }
-        if liveCount >= 1 {
-            if !WinExist("ahk_id " State.MainHost.hwnd)
-                State.MainHost.gui.Show("NoActivate")
-        } else
-            State.MainHost.gui.Hide()
     }
 
     ; Fallback: destroy any popout hosts that ended up empty (e.g. stale-tab cleanup left them blank).
@@ -2143,10 +2104,6 @@ CloseTab(host, tabId) {
     record := host.tabRecords[tabId]
     topHwnd := record.topHwnd
     contentHwnd := record.contentHwnd
-    ; Hide host immediately when closing the last tab — CloseWindowReliably is synchronous
-    ; and can block for up to 2000ms per message, so the host would stay visible otherwise.
-    if !host.isPopout && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 1
-        host.gui.Hide()
     ; Close before detach - window may process close better while still embedded
     CloseWindowReliably(topHwnd, contentHwnd)
     RemoveTrackedTab(host, tabId, false)
@@ -2209,10 +2166,6 @@ RemoveTrackedTab(host, tabId, restoreWindow := true) {
         host.activeTabId := host.tabOrder[Max(1, closedIdx - 1)]
     else if host.activeTabId = tabId
         host.activeTabId := ""
-
-    ; When ShowOnlyWhenTabs and main host now has 0 tabs, hide immediately
-    if !host.isPopout && Config.ShowOnlyWhenTabs && host.tabOrder.Length = 0
-        host.gui.Hide()
 }
 
 ; Re-hides topHwnd when it re-appears while stacked; shows the host if it was tray-hidden.
@@ -2228,8 +2181,6 @@ ReEmbedTab(host, tabId, *) {
     ; HostGuiResized(minMax=0) will call ShowOnlyActiveTab when the user restores the host.
     if !IsWindowExists(host.hwnd) || DllCall("IsIconic", "ptr", host.hwnd, "int")
         return
-    if Config.ShowOnlyWhenTabs && !WinExist("ahk_id " host.hwnd)
-        host.gui.Show()
     if IsWindowExists(record.contentHwnd) {
         if DllCall("GetParent", "ptr", record.contentHwnd, "ptr") != host.clientHwnd
             AttachTrackedWindow(host, tabId)
@@ -2750,17 +2701,13 @@ DrawTabBar(host) {
         x := Config.HostPadding
     }
 
-    if Config.TabBarOffsetY >= 0
-        tabOffsetY := Config.TabBarOffsetY
-    else {
-        align := StrLower(Config.TabBarAlignment)
-        if align = "top"
-            tabOffsetY := 0
-        else if align = "bottom"
-            tabOffsetY := tabBarH - Config.TabHeight
-        else
-            tabOffsetY := (tabBarH - Config.TabHeight) // 2
-    }
+    align := StrLower(Config.TabBarAlignment)
+    if align = "top"
+        tabOffsetY := 0
+    else if align = "bottom"
+        tabOffsetY := tabBarH - Config.TabHeight
+    else
+        tabOffsetY := (tabBarH - Config.TabHeight) // 2
 
     ; Create three tab background brushes once, reuse in loop, delete after
     pBrushActive := 0
@@ -3606,7 +3553,7 @@ UpdateHostIcon(host) {
         return
 
     host.iconHandle := hBadged
-    ; SendMessage fails for hidden windows; enable detection so host can be found when ShowOnlyWhenTabs
+    ; SendMessage fails for hidden windows; enable detection so a minimized/hidden host still receives the icon
     prev := DetectHiddenWindows(true)
     try {
         SendMessage(0x0080, 0, hBadged,, "ahk_id " host.hwnd)  ; WM_SETICON ICON_SMALL

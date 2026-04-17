@@ -3,31 +3,35 @@
 [![AutoHotkey v2](https://img.shields.io/badge/AutoHotkey-v2-334455?logo=autohotkey)](https://www.autohotkey.com/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows)](https://www.microsoft.com/windows)
 
-**StackTabs** is an [AutoHotkey v2](https://www.autohotkey.com/) script that **embeds matching top-level windows into one tabbed host**. You get a single resizable frame, a themed tab bar, and normal window controls—while each app still runs in its own process.
+**StackTabs** is an [AutoHotkey v2](https://www.autohotkey.com/) script that **embeds matching top-level windows into one tabbed host**. You get a single resizable frame, a themed tab bar, and normal window controls, while each application keeps running in its own process.
 
-Good fit: terminals, dev tools, and many Win32 apps that tolerate reparenting. Poor fit: browsers and some UI frameworks that fight embedding (see **Notes**).
+It works well for terminals, many Win32 tools, and some desktop stacks that tolerate reparenting. Browsers and some modern UI frameworks often fight embedding; expect quirks (see **Compatibility**).
 
 ## Requirements
 
-- [AutoHotkey v2](https://www.autohotkey.com/) installed
+- [AutoHotkey v2](https://www.autohotkey.com/) installed on Windows
 
 ## Quick start
 
-1. Copy `config.ini.example` to `config.ini`
-2. Set `Match1` (and optionally `Match2`, `Match3`, …) to a substring of the window titles you want to collect
-3. Run `StackTabs.ahk` (double-click or run with AutoHotkey)
+1. Copy `config.ini.example` to `config.ini` in the same folder as `StackTabs.ahk`.
+2. Under `[General]`, set at least `Match1=` to a **case-insensitive substring** that must appear in the title of windows you want to stack. Add `Match2`, `Match3`, and so on as needed.
+3. Run `StackTabs.ahk` (double-click or launch with AutoHotkey).
 
-If no match patterns are configured, the script prompts you and opens the config file. Only one instance runs at a time (`#SingleInstance Force`).
+If no match patterns are configured, StackTabs prompts you and opens `config.ini`. Only one instance runs at a time (`#SingleInstance Force`).
+
+After editing `config.ini`, **restart StackTabs** (tray menu or exit and run again) so changes load.
 
 ---
 
-## Screenshots:
-With StackTabs
+## Screenshots
+
+With StackTabs  
 <img width="3440" height="1440" alt="image" src="https://github.com/user-attachments/assets/c47aada2-dad5-48b4-adbe-2909b405a5f3" />
 
-Without StackTabs
+Without StackTabs  
 <img width="3440" height="1440" alt="image" src="https://github.com/user-attachments/assets/847c8976-c9d4-46f6-9a06-27438ba06979" />
 
+---
 
 ## Hotkeys
 
@@ -35,101 +39,103 @@ Without StackTabs
 
 | Hotkey | Action |
 |--------|--------|
-| `Win+Shift+T` | Show or hide the main host (respects **Show only when tabs**—won’t show an empty host) |
-| `Win+Shift+D` | Write a discovery dump to `discovery.txt` *(only when `DebugDiscovery=1`)* |
+| `Win+Shift+T` | Show or hide the main host. If **Show only when tabs** is enabled, an empty host stays hidden. |
+| `Win+Shift+D` | Append a discovery dump to `discovery.txt` *(only when `DebugDiscovery=1` in `[General]`)* |
 
-### When the StackTabs host (or embedded content) is focused
+### When the StackTabs host or embedded content is focused
 
 | Hotkey | Action |
 |--------|--------|
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Open the **tab switcher** and move forward/back through tabs |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Open the **tab switcher** and move forward or backward through tabs |
 | `Ctrl+1` … `Ctrl+9` | Jump to tab 1–9 by position |
 | `Ctrl+W` | Close the active tab |
 | `Ctrl+Shift+O` | Pop the active tab out to its own host window |
 | `Ctrl+Shift+M` | Merge a focused **pop-out** host back into the main stack |
 
-### Tab switcher (`Ctrl+Tab` style)
+### Tab switcher (`Ctrl+Tab` flow)
 
-The switcher is the browser-like flow: **hold Ctrl**, press **Tab** / **Shift+Tab** to cycle (or **Tab** while the overlay is open). The selected tab’s content is **previewed live** behind the overlay.
+Hold **Ctrl**, press **Tab** or **Shift+Tab** to cycle. The selected tab’s content is **previewed** behind the overlay. With a single tab, `Ctrl+Tab` does not open the overlay.
 
 | Input | Action |
 |--------|--------|
 | Release **Ctrl** | Commit to the highlighted tab and close the switcher |
-| `Enter` | Same as commit (activate selection) |
-| `Escape` | Cancel and restore the tab that was active when you opened the switcher |
-| Arrow keys | Move selection (with live preview) |
-| `J` / `K` | Move selection up/down (vim-style, Ctrl-tab mode only) |
-
-With only one tab, `Ctrl+Tab` does not open the overlay (nothing to cycle).
+| `Enter` | Commit (same as releasing Ctrl) |
+| `Escape` | Cancel; in Ctrl+Tab mode, restore the tab that was active when the overlay opened |
+| `Left` / `Up` | Move selection toward the previous card |
+| `Right` / `Down` | Move selection toward the next card |
+| `K` / `J` | In Ctrl+Tab mode only: move selection **up** (K) or **down** (J), with wrapping |
 
 ---
 
 ## Configuration
 
-Edit `config.ini` (copy from `config.ini.example` if needed). **Restart StackTabs** after saving.
+Authoritative examples and inline comments live in **`config.ini.example`**. The tables below match what **`LoadConfigFromIni`** reads in `StackTabs.ahk`. If a key is missing, the **built-in default** from the `Config` object at the top of the script applies (not necessarily the numbers in the example file).
 
-### `[General]` — Matching and timing
+Boolean options use **`0`** or **`1`**.
 
-| Variable | Default *(if key omitted)* | Description |
-|----------|----------------------------|-------------|
-| `Match1` | *(required in practice)* | Title substring (case-insensitive). The window must match at least one `MatchN`. |
-| `Match2`, `Match3`, … | — | Extra patterns, e.g. `Match2=Notepad`. |
-| `MatchN=` *(empty value)* | — | Special: matches windows with an empty/whitespace title—**always** pair with `TargetExe=` so you don’t grab everything untitled. |
-| `WindowTitleMatch` | — | Legacy single pattern if no `MatchN` is set. Prefer `Match1`. |
-| `TargetExe` | `""` | Optional process filter, e.g. `pwsh.exe`. Empty = any process. |
-| `SlowSweepInterval` | `10000` | Periodic rescan (ms). Shell Hook + WinEvent handle most discovery; this catches stragglers. *(The example `config.ini.example` uses `3000`.)* |
-| `StackDelayMs` | `30` | Minimum delay before stacking (reduces glitches when windows appear in quick succession). |
-| `StackSwitchDelayMs` | `150` | Delay before auto-switching to a newly stacked tab (lets content settle). |
-| `WatchdogMaxMs` | `1500` | Max time to wait on a stubborn window before skipping it. |
-| `TabDisappearGraceMs` | `300` | Grace before removing a tab whose window vanished. |
-| `DebugDiscovery` | `0` | `1` = log discovery to `discovery.txt` and enable `Win+Shift+D` dump. |
-| `KeepAboveTabApps` | `0` | `1` (recommended) = continuously keep the StackTabs host above any visible unowned window of a tracked tab's process, while letting that process's popups/dialogs stay on top. Handles apps that periodically raise their main shell (via `BringWindowToTop` or an internal z-order change) without moving focus, as well as dialogs that would otherwise become buried below the host. Focus is never changed; only visual z-order is adjusted. |
+### `[General]` — Matching, timing, and debugging
 
-### `[Layout]` — Host and tab bar
+| Key | Default *(if omitted)* | Description |
+|-----|--------------------------|-------------|
+| `Match1`, `Match2`, … | *(none)* | Title **substrings** (case-insensitive). A window must match **at least one** `MatchN` entry. Patterns are read in order until an empty key stops the list. |
+| `WindowTitleMatch` | *(empty)* | **Legacy:** single pattern used only when no `MatchN` keys are present. Prefer `Match1`, `Match2`, … |
+| `TargetExe` | *(empty)* | Optional executable name filter (for example `pwsh.exe`). Empty = any process. |
+| `SlowSweepInterval` | `10000` | Slow **rescan** interval in ms (safety net alongside Shell Hook and WinEvent). The example config uses `3000`. |
+| `StackDelayMs` | `30` | Minimum wait before stacking; works together with title-stability checks. |
+| `StackSwitchDelayMs` | `150` | Delay before auto-switching to a newly stacked tab. |
+| `WatchdogMaxMs` | `1500` | Maximum time to keep retrying a stubborn embed. |
+| `TabDisappearGraceMs` | `300` | Grace period before removing a tab whose window disappeared. |
+| `DebugDiscovery` | `0` | `1` = log discovery details to **`discovery.txt`** and enable **`Win+Shift+D`**. |
+| `KeepAboveTabApps` | `0` | `1` = keep the host above the tracked app’s main shell where needed, reparent dialogs so they stay above the host, and return focus to the host after popups close. |
+| `KeepAboveTabAppsDebug` | `0` | With `KeepAboveTabApps=1`, writes verbose z-order tracing to **`debug-zorder.log`**. Troubleshooting only; the file grows quickly. |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HostTitle` | `StackTabs` | Host window title (and tray label base). |
-| `HostWidth` / `HostHeight` | `1200` / `800` | Initial size (px). Session geometry can override on next launch. |
-| `HostMinWidth` / `HostMinHeight` | `700` / `500` | Minimum host size (px). |
-| `HostPadding` | `8` | Padding around content (left, right, top). |
-| `HostPaddingBottom` | `-1` | Bottom padding; `-1` = same as `HostPadding`. |
-| `HeaderHeight` | `36` | Tab bar height (px). |
-| `TabHeight` | `30` | Tab button height (px). |
-| `TabGap` | `6` | Gap between tabs (px). |
-| `MinTabWidth` / `MaxTabWidth` | `120` / `240` | Tab button width limits (px). |
-| `CloseButtonWidth` / `PopoutButtonWidth` | `22` | Per-tab chrome (px). |
-| `TabBarAlignment` | `center` | `top`, `center`, or `bottom` within the bar. |
+**Empty titles:** you can use a `MatchN` line whose value is empty or whitespace-only to match windows with **no real title**, but you **must** combine that with `TargetExe=` so StackTabs does not capture every untitled window on the desktop. See comments in `config.ini.example`.
+
+### `[Layout]` — Host window, tab bar, and tab chrome
+
+| Key | Default *(if omitted)* | Description |
+|-----|--------------------------|-------------|
+| `HostTitle` | `StackTabs` | Host window title (and tray name base). |
+| `HostWidth` / `HostHeight` | `1200` / `800` | Initial size in pixels. |
+| `HostMinWidth` / `HostMinHeight` | `700` / `500` | Minimum host size in pixels. |
+| `HostPadding` | `8` | Inner padding (pixels) around the host chrome. |
+| `HostPaddingBottom` | `-1` | Bottom padding; **`-1`** means “use `HostPadding`”. |
+| `HeaderHeight` | `36` | Tab bar strip height in pixels. |
 | `TabPosition` | `top` | `top` or `bottom`. |
-| `TabIndicatorHeight` | `3` | Active indicator height (px); `0` = off. |
-| `TabCornerRadius` | `5` | Rounded corners (px); `0` = square. |
-| `ActiveTabStyle` | `full` | `full` = active tab has its own background; `indicator` = accent strip only. |
-| `ShowOnlyWhenTabs` | `1` | `1` = hide host when there are zero tabs; `0` = always show host. |
+| `TabBarAlignment` | `center` | Vertical placement of tabs inside the bar: `top`, `center`, or `bottom`. |
+| `TabHeight` | `30` | Tab button height in pixels. |
+| `TabGap` | `6` | Gap between tabs in pixels. |
+| `MinTabWidth` / `MaxTabWidth` | `120` / `240` | Tab width limits in pixels. |
+| `CloseButtonWidth` / `PopoutButtonWidth` | `22` | Width of the per-tab close and pop-out controls. |
+| `TabIndicatorHeight` | `3` | Height of the active-tab indicator strip; **`0`** disables it. |
+| `TabCornerRadius` | `5` | Corner radius in pixels; **`0`** for square tabs. |
+| `TabSeparatorWidth` | `0` | Width of optional vertical separators between tabs; pair with `TabSeparatorColor` in the theme file. |
+| `ActiveTabStyle` | `full` | `full` = active tab has its own background. `indicator` = shared background with an accent strip. |
+| `TabTitleMaxLen` | `9999` | Character cap for tab labels. **`9999`** (or omit) behaves as “no fixed cap”; width-based truncation still applies. |
+| `TabMaxLines` | `1` | `1` = single line with ellipsis; **`2`** or more enables wrapping (increase `TabHeight` so text fits). |
+| `TabTitleAlignH` | `center` | `left`, `center`, or `right`. |
+| `TabTitleAlignV` | `center` | `top`, `center`, or `bottom`. When `TabMaxLines` is 2 or more, vertical alignment follows the wrapped layout. |
+| `ShowTabNumbers` | `0` | `1` = prefix titles with `1.`, `2.`, … |
+| `ShowCloseButton` | `1` | `1` = show the per-tab close button. |
+| `ShowPopoutButton` | `1` | `1` = show the pop-out (detach) button. |
 
-### `[Layout]` — Tab titles
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TabTitleMaxLen` | *(omit)* | Optional max label length; omit for width-based dynamic truncation. |
-| `TabMaxLines` | `1` | `1` = one line + ellipsis; `2`+ = wrap. Bump `TabHeight` when wrapping so the second line fits. |
-| `TabTitleAlignH` / `TabTitleAlignV` | `center` | Horizontal / vertical alignment. `TabTitleAlignV` is forced to `top` when `TabMaxLines >= 2`. |
-| `ShowTabNumbers` | `0` | `1` = prefix with `1.`, `2.`, … |
+Theme files under `themes\` can override many of these same layout keys for the active theme only; see [themes/README.md](themes/README.md).
 
 ### `[Theme]`
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ThemeFile` | `dark.ini` | File under `themes\` (see tray menu **Theme**). |
+| Key | Default *(if omitted)* | Description |
+|-----|--------------------------|-------------|
+| `ThemeFile` | `dark.ini` | Filename under **`themes\`** (tray menu **Theme**). If the file is missing, StackTabs falls back to **`themes\dark.ini`**. |
 
-Built-in themes include `dark`, `light`, `spacious`, `compact`, `spacious-dark`, `bottom-tabs`, `high-contrast`, `minimal`, `numbered`, `tmux`. Custom `.ini` files go in `themes\` or `themes\custom\`. Details: [themes/README.md](themes/README.md).
+Shipped presets include **`dark.ini`**, **`spacious.ini`**, **`tmux.ini`**, **`ember.ini`**, **`fjord.ini`**, **`paper.ini`**, and **`nocturne.ini`**. Add your own `.ini` next to them or under **`themes\custom\`**.
 
 ### `[TitleFilters]`
 
-| Variable | Description |
-|----------|-------------|
-| `Strip1`, `Strip2`, … | Regexes removed from titles before tabs/switcher (applied in order, then trimmed). |
+| Key | Description |
+|-----|-------------|
+| `Strip1`, `Strip2`, … | Regular expressions removed from window titles **before** display in tabs and the switcher. Applied in order; the result is trimmed. |
 
-**Example:**
+Example:
 
 ```ini
 Strip1=^MyApp - \s*
@@ -138,20 +144,19 @@ Strip2=\s*- Microsoft Edge$
 
 ---
 
-## Example `config.ini` skeleton
+## Minimal `config.ini` shape
+
+This mirrors the sections in `config.ini.example`; adjust keys to taste.
 
 ```ini
 [General]
 Match1=PowerShell
-Match2=Notepad
 TargetExe=
 SlowSweepInterval=3000
 StackDelayMs=100
 StackSwitchDelayMs=150
 WatchdogMaxMs=1500
 TabDisappearGraceMs=300
-DebugDiscovery=0
-KeepAboveTabApps=0
 
 [Layout]
 HostTitle=StackTabs
@@ -160,25 +165,22 @@ HostHeight=800
 HostMinWidth=700
 HostMinHeight=500
 HostPadding=8
-HostPaddingBottom=-1
 HeaderHeight=36
+TabPosition=top
+TabBarAlignment=center
 TabHeight=30
 TabGap=6
 MinTabWidth=120
 MaxTabWidth=240
 CloseButtonWidth=22
 PopoutButtonWidth=22
-TabBarAlignment=center
-TabPosition=top
 TabIndicatorHeight=3
 TabCornerRadius=5
 ActiveTabStyle=full
-TabTitleMaxLen=
 TabMaxLines=1
 TabTitleAlignH=center
 TabTitleAlignV=center
 ShowTabNumbers=0
-ShowOnlyWhenTabs=1
 
 [Theme]
 ThemeFile=dark.ini
@@ -191,13 +193,13 @@ ThemeFile=dark.ini
 
 ## What you get
 
-- **One host, many apps** — Reparent embedded clients into a shared client area; one tab visible at a time.
-- **Event-driven discovery** — Shell Hook plus WinEvent (show, name change, uncloak) plus a slow sweep for edge cases.
-- **Stable tab identity** — Tab IDs survive HWND churn so recreated windows can rebind to the same tab.
-- **Pop-out / merge** — Move a tab to its own StackTabs window or pull it back.
+- **One host, many processes** — Matching top-level windows are reparented into a shared client area; one tab is visible at a time.
+- **Event-driven discovery** — Shell Hook and WinEvent for show, rename, and uncloak, plus a slow sweep for edge cases.
+- **Stable tab identity** — Tab IDs are derived from stable window attributes so HWND churn can rebind to the same logical tab (see below).
+- **Pop-out and merge** — Detach a tab to its own host window or pull it back.
 - **Ctrl+Tab switcher** — Overlay with live preview; commit on Ctrl release or Enter.
-- **Themes** — INI-driven colors, fonts, and layout hints from `themes\`.
-- **Tray icon** — Reflects the active tab’s application icon where possible.
+- **Themes** — Colors, fonts, and optional layout overrides from `themes\*.ini` ([themes/README.md](themes/README.md)).
+- **Tray** — Theme picker, open themes folder, exit; the icon reflects the active tab’s application where possible.
 
 ---
 
@@ -209,40 +211,28 @@ Right-click the tray icon: **Theme**, **Open themes folder**, **Exit**.
 
 ## How it works (short)
 
-1. **Discovery** — New/destroyed windows via Shell Hook and WinEvent; periodic `RefreshWindows` as a safety net.
-2. **Watchdog** — Candidates wait `StackDelayMs` (and title stability) before embed; hung windows retry until `WatchdogMaxMs`.
-3. **Embedding** — Saves original parent/styles, `SetParent` into the host client area, adjusts styles; optional top-level “shell” window hidden when it differs from the embedded client.
-4. **Rebind** — If the app replaces its window, matching by tab ID reattaches logic without you reopening StackTabs.
+1. **Discovery** — Hooks and events notice new and destroyed windows; `RefreshWindows` runs on `SlowSweepInterval` as a backstop.
+2. **Embed gate** — Candidates wait `StackDelayMs` (and pass title stability) before embed; hung windows retry until `WatchdogMaxMs`.
+3. **Embedding** — Original parent and styles are saved, `SetParent` moves the window into the host client area, and styles are adjusted. Optional logic can hide a separate “shell” HWND when it is not the embedded client.
+4. **Rebind** — If an app replaces its window, the same tab ID can attach to the new HWND without restarting StackTabs.
 
-Tab ID shape: `processName|rootOwner|normalizedTitle|contentClass` (see code comments for details).
+**Tab ID** (see `BuildCandidateId` in the script): `pid|rootOwnerHwnd|normalizedTitle|contentWindowClass`. The HWND of the embedded client is **not** part of the ID so the tab can survive reflows and replacements.
 
 ---
 
 ## Safety
 
-- **No system surgery** — No registry edits, no injection into other processes.
-- **Reversible on exit** — Embedded windows are detached and restored toward their prior parent/styles.
-- **User session** — No admin required; normal Win32 APIs only.
+- **No system surgery** — No registry writes and no injection into other processes.
+- **Reversible on exit** — Embedded windows are detached and restored toward their prior parent and styles.
+- **User session** — Normal Win32 APIs; admin is not required.
 
 ---
 
-## Edge cases
+## Compatibility and caveats
 
-| Situation | What to expect |
-|-----------|----------------|
-| Aggressive HWND recycling | Rebind + grace period before dropping a tab |
-| Some dialogs / pickers | Separate top-level windows; covered by `KeepAboveTabApps=1` |
-| Weird hierarchies | `DebugDiscovery=1` and `Win+Shift+D` |
-| Focus in embedded apps | Cross-process focus uses `AttachThreadInput`; some apps still need a click |
-
----
-
-## Notes
-
-- Reparenting is **unsupported** for many apps by design; expect quirks with Chrome/Edge and some WPF/WinUI stacks.
-- Tab switches show/hide embedded HWNDs; repaint quality depends on the guest app.
-- Make sure to copy `config.ini.example` and rename it to `config.ini`
-- Some apps may not work, this script was made with a specific WPF based app in mind. 
+- Reparenting is **unsupported** by many applications by design. Chromium-based browsers, some WPF stacks, and WinUI surfaces are common trouble spots.
+- Tab switches show and hide embedded HWNDs; repaint quality depends on the guest application.
+- Cross-process focus uses `AttachThreadInput`; a few guests still need an explicit click after focus changes.
 
 ---
 
