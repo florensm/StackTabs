@@ -59,7 +59,8 @@ Config := {
     TabCornerRadius: 5,
     ActiveTabStyle: "full",  ; "full" = active tab has different bg; "indicator" = only indicator strip, same bg as inactive
     ShowOnlyWhenTabs: true,  ; when true, show host only when 1+ tabs; hide to tray when 0 (default). Set to 0 to always show host.
-    BumpOnChildDialog: false,  ; Bring host forward when embedded app opens a dialog
+    KeepAboveTabApps: false,   ; Keep host above any window in a tracked tab's process whenever that process takes foreground, and reparent its dialogs to the host so they stay above it via the OS owner rule
+    KeepAboveTabAppsDebug: false,  ; Verbose z-order trace to debug-zorder.log (paired with KeepAboveTabApps)
 
     ; === THEME (loaded from themes\ folder; dark.ini is the default and fallback) ===
     ThemeTabIndicatorColor: "",   ; set by LoadThemeFromFile; defaults to TabActiveBg
@@ -129,7 +130,38 @@ State := {
     SwitcherSelVisIdx: 0,
     SwitcherCards: [],
     SwitcherCtrlTabMode: false,
-    SwitcherOrigTabIdx: 0
+    SwitcherOrigTabIdx: 0,
+    ZOrderEnforcerFn: "",      ; bound EnforceZOrderTick closure; "" = not running
+    ZOrderEnforceBusy: false   ; reentrancy guard for EnforceHostZOrder
+}
+
+; Returns the scalar value of an INI entry with any inline "; ..." comment
+; stripped and surrounding whitespace trimmed. Windows INI format treats ';'
+; only as a line comment, not an end-of-value comment, so IniRead returns
+; the full string including the comment text. Raw comparisons and Integer()
+; conversions on such strings fail silently (the failure is caught by the
+; outer try in LoadConfigFromIni, skipping everything after the first throw).
+IniClean(path, section, key, default := "") {
+    raw := IniRead(path, section, key, "")
+    if raw = ""
+        return default
+    parts := StrSplit(raw, ";")
+    return Trim(parts[1])
+}
+
+IniBool(path, section, key, default := false) {
+    val := IniClean(path, section, key, "")
+    if val = ""
+        return default
+    return val = "1"
+}
+
+IniInt(path, section, key, default) {
+    val := IniClean(path, section, key, "")
+    if val = ""
+        return default
+    try return Integer(val)
+    return default
 }
 
 ; Loads config.ini into globals; migrates from StackTabs.ini if needed.
@@ -143,14 +175,15 @@ LoadConfigFromIni() {
     ; Read theme first so it's applied even if the try block below throws (e.g. invalid Layout values)
     Config.ActiveThemeFile := Trim(IniRead(iniPath, "Theme", "ThemeFile", "dark.ini"))
     try {
-        Config.TargetExe := IniRead(iniPath, "General", "TargetExe", Config.TargetExe)
-        Config.SlowSweepInterval := Integer(IniRead(iniPath, "General", "SlowSweepInterval", Config.SlowSweepInterval))
-        Config.StackDelayMs := Integer(IniRead(iniPath, "General", "StackDelayMs", Config.StackDelayMs))
-        Config.StackSwitchDelayMs := Integer(IniRead(iniPath, "General", "StackSwitchDelayMs", Config.StackSwitchDelayMs))
-        Config.WatchdogMaxMs := Integer(IniRead(iniPath, "General", "WatchdogMaxMs", Config.WatchdogMaxMs))
-        Config.TabDisappearGraceMs := Integer(IniRead(iniPath, "General", "TabDisappearGraceMs", Config.TabDisappearGraceMs))
-        Config.DebugDiscovery := (IniRead(iniPath, "General", "DebugDiscovery", "0") = "1")
-        Config.BumpOnChildDialog := (IniRead(iniPath, "General", "BumpOnChildDialog", "0") = "1")
+        Config.TargetExe := IniClean(iniPath, "General", "TargetExe", Config.TargetExe)
+        Config.SlowSweepInterval := IniInt(iniPath, "General", "SlowSweepInterval", Config.SlowSweepInterval)
+        Config.StackDelayMs := IniInt(iniPath, "General", "StackDelayMs", Config.StackDelayMs)
+        Config.StackSwitchDelayMs := IniInt(iniPath, "General", "StackSwitchDelayMs", Config.StackSwitchDelayMs)
+        Config.WatchdogMaxMs := IniInt(iniPath, "General", "WatchdogMaxMs", Config.WatchdogMaxMs)
+        Config.TabDisappearGraceMs := IniInt(iniPath, "General", "TabDisappearGraceMs", Config.TabDisappearGraceMs)
+        Config.DebugDiscovery := IniBool(iniPath, "General", "DebugDiscovery", false)
+        Config.KeepAboveTabApps := IniBool(iniPath, "General", "KeepAboveTabApps", false)
+        Config.KeepAboveTabAppsDebug := IniBool(iniPath, "General", "KeepAboveTabAppsDebug", false)
         Config.HostTitle := IniRead(iniPath, "Layout", "HostTitle", Config.HostTitle)
         Config.HostWidth := Integer(IniRead(iniPath, "Layout", "HostWidth", Config.HostWidth))
         Config.HostHeight := Integer(IniRead(iniPath, "Layout", "HostHeight", Config.HostHeight))
@@ -504,6 +537,21 @@ State.WinEventHooks.Push(DllCall("SetWinEventHook",
     "UInt", 0x8018, "UInt", 0x8018,
     "Ptr",  0,      "Ptr",  State.WinEventHookCallback,
     "UInt", 0,      "UInt", 0, "UInt", 0, "Ptr"))
+; EVENT_SYSTEM_FOREGROUND (0x0003): a new top-level window becomes the foreground window.
+; Used by the KeepAboveTabApps feature to bump the host above any activated tab-app window.
+State.WinEventHooks.Push(DllCall("SetWinEventHook",
+    "UInt", 0x0003, "UInt", 0x0003,
+    "Ptr",  0,      "Ptr",  State.WinEventHookCallback,
+    "UInt", 0,      "UInt", 0, "UInt", 0, "Ptr"))
+
+; Persistent z-order enforcer for KeepAboveTabApps. Event-driven foreground
+; handling alone cannot cover apps that raise their main shell via
+; BringWindowToTop / explicit SetWindowPos without producing a foreground
+; change. A low-frequency poll walks the z-order and nudges the host back
+; into place whenever the invariant is violated.
+if Config.KeepAboveTabApps
+    StartZOrderEnforcer()
+InitZOrderDebugLog()
 
 OnExit(CleanupAll)
 
@@ -1100,7 +1148,13 @@ BuildHostInstance(isPopout := false) {
     host.isResizing := false
 
     title := isPopout ? (Config.HostTitle " (popped out)") : Config.HostTitle
-    guiOpts := "+Resize +MinSize" Config.HostMinWidth "x" Config.HostMinHeight
+    ; +0x02000000 = WS_CLIPCHILDREN. Without it, the host's WM_ERASEBKGND paints the
+    ; host background over the area of any embedded child window. Foreign WPF content
+    ; uses DirectComposition: it will not auto-recover from GDI damage, so its last
+    ; presented frame gets overwritten by white and the app only repaints on a size
+    ; change or user interaction. Clipping children out of the parent's paint pipeline
+    ; prevents that.
+    guiOpts := "+Resize +MinSize" Config.HostMinWidth "x" Config.HostMinHeight " +0x02000000"
     host.gui := Gui(guiOpts, title)
     host.gui.BackColor := Config.ThemeBackground
     host.gui.MarginX := 0
@@ -1367,10 +1421,16 @@ OnShellHook(wParam, lParam, msg, hwnd) {
 ;   0x8018 EVENT_OBJECT_UNCLOAKED  — UWP/WinUI window uncloaks
 ; idObject=0 (OBJID_WINDOW) means the event is for the window object itself, not a child control.
 WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsEventTime) {
-    if (event != 0x8002 && event != 0x800C && event != 0x8018)
+    if (event != 0x8002 && event != 0x800C && event != 0x8018 && event != 0x0003)
         return
     if (idObject != 0 || !hwnd)
         return
+    ; EVENT_SYSTEM_FOREGROUND: dispatched separately so it doesn't fall through
+    ; the SHOW/NAMECHANGE/UNCLOAK logic below.
+    if (event = 0x0003) {
+        OnForegroundChanged(hwnd)
+        return
+    }
     ; NAMECHANGE on already-tracked tab: update the title label and redraw the tab bar.
     ; Do NOT call SelectTab here — switching the active tab on every title change (e.g. Notepad
     ; adding a '*' prefix when unsaved) would steal focus from whichever tab the user is in.
@@ -1401,20 +1461,49 @@ WinEventProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsE
             }
         }
     }
-    ; Bump host forward when embedded app opens a dialog (e.g. modal), if enabled.
-    ; Only on SHOW (0x8002): NAMECHANGE/UNCLOAK must not trigger bump. Match on PID
-    ; (not processName) so multiple instances of same exe don't bump the wrong host.
-    ; After bump, return to avoid OnWindowCreated trying to embed the dialog as a tab.
-    if (event = 0x8002) && Config.BumpOnChildDialog {
+    ; When KeepAboveTabApps is on: reparent an owned dialog belonging to a tracked
+    ; pid to the host and bump the host forward once. Reparenting leverages the
+    ; OS owner rule to keep the dialog above the host structurally, so the
+    ; enforcer tick doesn't have to catch the "buried popup" case every frame.
+    ; Only on SHOW (0x8002): NAMECHANGE/UNCLOAK must not trigger. Match on PID
+    ; (not processName) so multiple instances of the same exe bump the right host.
+    ; After the bump, return to avoid OnWindowCreated trying to embed the dialog
+    ; as a tab.
+    ;
+    ; Delay the bump by ~80ms so the dialog's own ShowWindow/activation has
+    ; completed before we reorder. EVENT_OBJECT_SHOW fires early in that sequence;
+    ; bumping synchronously wins the race for an instant and loses it a frame later.
+    if (event = 0x8002) && Config.KeepAboveTabApps {
         try {
             newPid := WinGetPID("ahk_id " hwnd)
             if newPid != "" {
+                ownerHwnd := DllCall("GetWindow", "ptr", hwnd, "uint", 4, "ptr")  ; GW_OWNER
                 for host in GetAllHosts() {
                     for tabId, record in host.tabRecords {
                         if (record.pid = newPid
                             && record.topHwnd != hwnd
                             && record.contentHwnd != hwnd) {
-                            BumpHostToFront(host)
+                            if Config.KeepAboveTabAppsDebug
+                                DbgZ("SHOW tracked-pid owned win=" DbgZDescribe(hwnd) " owner=" DbgZDescribe(ownerHwnd))
+                            ; Reparent the dialog's owner-chain to the host when it has any
+                            ; owner in the same process. WPF apps typically set dialog.Owner
+                            ; to Application.MainWindow, not to the embedded content window,
+                            ; so a strict match (owner = topHwnd || contentHwnd) never fires
+                            ; for those apps. Matching "any owner in same pid" covers both
+                            ; cases: dialog owned by the embedded tab AND dialog owned by the
+                            ; app's main window. Never reparent if owner is 0 (means it's a
+                            ; top-level with no owner - could be the main window itself) or
+                            ; if owner is already the host.
+                            if ownerHwnd && ownerHwnd != host.hwnd {
+                                try {
+                                    ownerPid := WinGetPID("ahk_id " ownerHwnd)
+                                    if ownerPid = newPid {
+                                        DllCall("SetWindowLongPtr", "ptr", hwnd
+                                            , "int", -8, "ptr", host.hwnd, "ptr")  ; GWLP_HWNDPARENT
+                                    }
+                                }
+                            }
+                            SetTimer(BumpHostToFront.Bind(host), -80)
                             return
                         }
                     }
@@ -2545,12 +2634,20 @@ ShowOnlyActiveTab(host, scheduleDeferred := true) {
         ; original app. Re-attach before positioning.
         if DllCall("GetParent", "ptr", record.contentHwnd, "ptr") != host.clientHwnd
             AttachTrackedWindow(host, tabId)
-        ; Position without SWP_NOCOPYBITS — avoids erasing pixels before the window repaints.
+        ; Position without SWP_NOCOPYBITS - avoids erasing pixels before the window repaints.
         flags := SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE
         DllCall("SetWindowPos", "ptr", record.contentHwnd, "ptr", 0
             , "int", areaX, "int", areaY, "int", areaW, "int", areaH
             , "uint", flags)
         DllCall("ShowWindow", "ptr", record.contentHwnd, "int", SW_SHOWNOACTIVATE)
+        ; Immediately queue a WM_PAINT on the content hwnd + all its children. Without this,
+        ; Windows treats SW_SHOW as "restore the previously valid bitmap" and no paint is
+        ; generated, so the host's background (= white) shows through until the 50ms deferred
+        ; check forces a sync repaint. Async flags only (no UPDATENOW here): a synchronous
+        ; cross-process dispatch inside ShowOnlyActiveTab pumps messages and can land a pending
+        ; tab canvas WM_PAINT in the default Static WndProc, corrupting the tab bar.
+        DllCall("RedrawWindow", "ptr", record.contentHwnd, "ptr", 0, "ptr", 0
+            , "uint", 0x0001 | 0x0004 | 0x0080)  ; INVALIDATE|ERASE|ALLCHILDREN
         activeHwnd := record.contentHwnd
         break
     }
@@ -2826,6 +2923,7 @@ CleanupAll(*) {
     State.WatchdogTimerActive := false
     SetTimer(WatchdogCheck, 0)
     SetTimer(TooltipCheckTimer, 0)
+    StopZOrderEnforcer()
 
     if State.WinEventHooks.Length {
         for hook in State.WinEventHooks
@@ -2978,24 +3076,389 @@ GetPreferredTabTitle(record) {
     return record.HasProp("processName") ? record.processName : ""
 }
 
-; Briefly sets host to topmost then drops back to normal z-order.
-; This repositions the host above the app's dialogs without making it
-; permanently always-on-top. Uses SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-; so the window is not moved, resized, or focused.
-BumpHostToFront(host) {
+; Raises the host to the top of the non-topmost z-order without activating it.
+; When KeepAboveTabApps is on, dialogs in the tracked pid have already been
+; reparented to the host (see OnWinEventProc's SHOW branch), so a single
+; HWND_TOP insert is enough: the OS owner rule keeps the dialog above the host
+; on every subsequent activation.
+; Uses SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE so the window is not moved,
+; resized, or focused.
+BumpHostToFront(host, reason := "") {
     if !host || !host.hwnd || !IsWindowExists(host.hwnd)
         return
-    SWP_FLAGS := 0x0013  ; SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-    ; Step 1: set topmost (brings above all non-topmost windows)
-    DllCall("SetWindowPos", "ptr", host.hwnd,
-        "ptr", -1,       ; HWND_TOPMOST
+    if Config.KeepAboveTabAppsDebug
+        DbgZBefore("BUMP_TOP", host.hwnd, 0, reason)
+    ret := DllCall("SetWindowPos", "ptr", host.hwnd,
+        "ptr", 0,        ; HWND_TOP
         "int", 0, "int", 0, "int", 0, "int", 0,
-        "uint", SWP_FLAGS)
-    ; Step 2: immediately drop topmost so it won't float above unrelated apps
-    DllCall("SetWindowPos", "ptr", host.hwnd,
-        "ptr", -2,       ; HWND_NOTOPMOST
-        "int", 0, "int", 0, "int", 0, "int", 0,
-        "uint", SWP_FLAGS)
+        "uint", 0x0013)  ; SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+    err := A_LastError
+    if Config.KeepAboveTabAppsDebug
+        DbgZAfter("BUMP_TOP", host.hwnd, 0, ret, err)
+}
+
+; Foreground-change handler (driven by EVENT_SYSTEM_FOREGROUND).
+; When KeepAboveTabApps is enabled, each time a top-level window belonging to a
+; tracked tab's process becomes the foreground window we run the enforcer
+; immediately so the fix is applied within a frame of the event rather than
+; waiting for the next enforcer tick. Delegates the actual decision (slot
+; below popup vs. bump to top) to EnforceHostZOrder, which inspects the full
+; z-order instead of guessing from the single foreground hwnd.
+;
+; Skips StackTabs hosts themselves to prevent self-bump loops.
+OnForegroundChanged(hwnd) {
+    if !Config.KeepAboveTabApps
+        return
+    if !hwnd
+        return
+    for h in GetAllHosts() {
+        if h.hwnd = hwnd {
+            if Config.KeepAboveTabAppsDebug
+                DbgZ("FG self-host (ignored) " DbgZDescribe(hwnd))
+            return
+        }
+    }
+    try {
+        fgPid := WinGetPID("ahk_id " hwnd)
+        if fgPid = ""
+            return
+        if Config.KeepAboveTabAppsDebug
+            DbgZ("FG " DbgZDescribe(hwnd))
+        for host in GetAllHosts() {
+            if !host.hwnd || !IsWindowExists(host.hwnd)
+                continue
+            matched := false
+            for tabId, record in host.tabRecords {
+                if record.pid = fgPid {
+                    matched := true
+                    break
+                }
+            }
+            if matched {
+                if Config.KeepAboveTabAppsDebug
+                    DbgZ("  FG matched host=" DbgZHex(host.hwnd) " -> Enforce(reason=fg)")
+                EnforceHostZOrder(host, "fg")
+            }
+        }
+    }
+}
+
+; Positions the host directly below `aboveHwnd` in the z-order without moving,
+; resizing, or activating either window. Used so a foreground popup stays on
+; top while the host slots in right beneath it (keeping the app's main shell
+; below the host).
+SlotHostBelow(host, aboveHwnd, reason := "") {
+    if !host || !host.hwnd || !IsWindowExists(host.hwnd)
+        return
+    if !IsWindowExists(aboveHwnd)
+        return
+    if Config.KeepAboveTabAppsDebug
+        DbgZBefore("SLOT_BELOW", host.hwnd, aboveHwnd, reason)
+    ret := DllCall("SetWindowPos", "ptr", host.hwnd, "ptr", aboveHwnd
+        , "int", 0, "int", 0, "int", 0, "int", 0
+        , "uint", 0x0013)  ; SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+    err := A_LastError
+    if Config.KeepAboveTabAppsDebug
+        DbgZAfter("SLOT_BELOW", host.hwnd, aboveHwnd, ret, err)
+}
+
+; Persistent z-order enforcer. Walks the top-level window list every
+; EnforcerIntervalMs and nudges the host whenever the invariant is violated:
+;
+;     host is above every visible unowned window of any tracked tab's pid,
+;     and below every visible owned (popup/dialog) window of those pids.
+;
+; Event-driven correction alone (via EVENT_SYSTEM_FOREGROUND) misses the case
+; where an app calls BringWindowToTop / SetWindowPos(HWND_TOP) on its main
+; shell without producing a foreground change. That is exactly the pattern
+; behind reports of the host dropping to the back on every click after a
+; popup closes: the app reorders its own group but never re-foregrounds, so
+; no single-shot event hook can cover it. A persistent low-frequency poll
+; does. All corrections use SWP_NOACTIVATE - focus is never touched.
+;
+; Interval: 16ms = roughly one 60Hz display frame. Apps that actively raise
+; their own group on every user interaction (BringWindowToTop without a
+; foreground change) will otherwise cause their main shell to be visible
+; for one to two frames before the next correction. At 16ms the correction
+; lands in the same frame as the app's raise, so the user at worst sees a
+; single-frame flash. Typical walk is 2-3 windows (stops at the host or the
+; first violating window), so CPU cost is well under 1%.
+StartZOrderEnforcer() {
+    if State.ZOrderEnforcerFn
+        return
+    State.ZOrderEnforcerFn := EnforceZOrderTick
+    SetTimer(State.ZOrderEnforcerFn, 16)
+}
+
+StopZOrderEnforcer() {
+    if State.ZOrderEnforcerFn {
+        SetTimer(State.ZOrderEnforcerFn, 0)
+        State.ZOrderEnforcerFn := ""
+    }
+}
+
+EnforceZOrderTick(*) {
+    if !Config.KeepAboveTabApps {
+        StopZOrderEnforcer()
+        return
+    }
+    if State.IsCleaningUp
+        return
+    for host in GetAllHosts()
+        EnforceHostZOrder(host)
+}
+
+; Walks the full visible top-level z-order in one pass and classifies every
+; window belonging to a tracked pid as either main-shell (no owner) or popup
+; (has an owner), and whether it is above or below the host. Two violations
+; are possible:
+;
+;   A. A tracked main-shell sits above the host (the app group-raised).
+;      Repair: slot the host below the lowest tracked popup we saw above
+;      ourselves (keeps that popup on top), or bump to HWND_TOP if there
+;      was none.
+;
+;   B. A tracked popup sits below the host. This happens when the app opens
+;      an owned dialog without activating it: the OS places the popup above
+;      its owner (the main shell) to satisfy owner-group rules, but because
+;      the host is already above the main shell the popup ends up sandwiched
+;      below the host - invisible to the user. Repair: slot the host just
+;      below that popup so it becomes visible.
+;
+; Violation B takes priority because it is the one the user cannot work
+; around (the popup is literally hidden). If both are present in the same
+; frame, fixing B first will expose the popup; a subsequent tick (60ms
+; later) will re-check and fix any remaining main-shell-above-host case.
+;
+; Only the host is repositioned. No other window's parent, owner, or
+; z-order is touched. SWP_NOACTIVATE throughout.
+EnforceHostZOrder(host, reason := "tick") {
+    if !host || !host.hwnd || !IsWindowExists(host.hwnd)
+        return
+    ; Only visible hosts need enforcement. A hidden host being "behind"
+    ; everything is by design.
+    if !DllCall("IsWindowVisible", "ptr", host.hwnd, "int")
+        return
+    if host.tabRecords.Count = 0
+        return
+    ; Reentrancy guard. DbgZSnapshot() and other debug writes call
+    ; WinGetPID/WinGetTitle, which pump messages and can let a queued
+    ; SetTimer(EnforceZOrderTick) or foreground-change callback fire
+    ; mid-pass. Without this guard, two enforces see the same
+    ; "shell above host" state and each issue their own BumpHostToFront,
+    ; so SetWindowPos runs twice for a single violation. The second call
+    ; is always a no-op but still costs a round trip to win32k. Keep the
+    ; first pass, drop the rest until it returns.
+    if State.ZOrderEnforceBusy
+        return
+    State.ZOrderEnforceBusy := true
+    try {
+        EnforceHostZOrderImpl(host, reason)
+    } finally {
+        State.ZOrderEnforceBusy := false
+    }
+}
+
+EnforceHostZOrderImpl(host, reason) {
+    trackedPids := Map()
+    for tabId, record in host.tabRecords
+        trackedPids[record.pid] := true
+
+    seenHost := false
+    lastPopupAboveHost   := 0   ; lowest-z-order tracked popup above the host
+    topPopupBelowHost    := 0   ; highest-z-order tracked popup below the host
+    shellAboveHost       := false
+    trackedSeen          := 0   ; total tracked-pid visible windows scanned
+    hwnd := DllCall("GetTopWindow", "ptr", 0, "ptr")
+    while hwnd {
+        if hwnd = host.hwnd {
+            seenHost := true
+            hwnd := DllCall("GetWindow", "ptr", hwnd, "uint", 2, "ptr")  ; GW_HWNDNEXT
+            continue
+        }
+        if DllCall("IsWindowVisible", "ptr", hwnd, "int") {
+            pid := 0
+            try pid := WinGetPID("ahk_id " hwnd)
+            if pid && trackedPids.Has(pid) {
+                trackedSeen++
+                owner := DllCall("GetWindow", "ptr", hwnd, "uint", 4, "ptr")  ; GW_OWNER
+                if owner {
+                    if !seenHost
+                        lastPopupAboveHost := hwnd
+                    else if !topPopupBelowHost {
+                        topPopupBelowHost := hwnd
+                        break   ; first tracked popup below host is all we need
+                    }
+                } else if !seenHost {
+                    shellAboveHost := true
+                }
+            }
+        }
+        hwnd := DllCall("GetWindow", "ptr", hwnd, "uint", 2, "ptr")  ; GW_HWNDNEXT
+    }
+
+    ; Log decision only when we actually act; no-op ticks would flood the log.
+    ; Violation B first: a hidden popup is a user-visible regression.
+    if topPopupBelowHost {
+        if Config.KeepAboveTabAppsDebug {
+            DbgZ("ENFORCE[" reason "] host=" DbgZHex(host.hwnd)
+                . " action=SLOT_BELOW_BURIED_POPUP"
+                . " popupBelow=" DbgZHex(topPopupBelowHost)
+                . " shellAbove=" (shellAboveHost ? "1" : "0")
+                . " popupAbove=" DbgZHex(lastPopupAboveHost)
+                . " trackedSeen=" trackedSeen)
+            DbgZ(DbgZDescribe(topPopupBelowHost) " <-- buried popup")
+            DbgZ(DbgZSnapshot())
+        }
+        SlotHostBelow(host, topPopupBelowHost, "buried_popup")
+        if Config.KeepAboveTabAppsDebug
+            DbgZ("AFTER:" "`r`n" DbgZSnapshot())
+        return
+    }
+    if shellAboveHost {
+        if Config.KeepAboveTabAppsDebug {
+            DbgZ("ENFORCE[" reason "] host=" DbgZHex(host.hwnd)
+                . " action=" (lastPopupAboveHost ? "SLOT_BELOW_POPUP_ABOVE" : "BUMP_TOP")
+                . " popupAbove=" DbgZHex(lastPopupAboveHost)
+                . " trackedSeen=" trackedSeen)
+            DbgZ(DbgZSnapshot())
+        }
+        if lastPopupAboveHost
+            SlotHostBelow(host, lastPopupAboveHost, "shell_above")
+        else
+            BumpHostToFront(host, "shell_above")
+        if Config.KeepAboveTabAppsDebug
+            DbgZ("AFTER:" "`r`n" DbgZSnapshot())
+        return
+    }
+    ; Invariant held; for foreground events (not routine ticks) note it.
+    if reason != "tick" && Config.KeepAboveTabAppsDebug
+        DbgZ("ENFORCE[" reason "] host=" DbgZHex(host.hwnd) " action=NOOP trackedSeen=" trackedSeen)
+}
+
+; ============ Z-ORDER DEBUG LOGGING ============
+; All helpers below are gated on Config.KeepAboveTabAppsDebug by their callers
+; (or by the flag check inside DbgZ itself). The file is rewritten at startup
+; so a single session's output is self-contained.
+;
+; Log format: each record begins with a "HH:mm:ss.mmm tick=N  " prefix; multi-
+; line snapshots are written as separate records so they line up by timestamp.
+
+DbgZPath() {
+    return A_ScriptDir "\debug-zorder.log"
+}
+
+DbgZ(msg) {
+    if !Config.HasProp("KeepAboveTabAppsDebug") || !Config.KeepAboveTabAppsDebug
+        return
+    try {
+        stamp := FormatTime(, "HH:mm:ss") "." Format("{:03d}", A_MSec)
+        FileAppend(stamp " tick=" A_TickCount "  " msg "`r`n", DbgZPath(), "UTF-8")
+    }
+}
+
+; Pretty-print an hwnd as hex, tolerating 0.
+DbgZHex(hwnd) {
+    return hwnd ? Format("0x{:x}", hwnd) : "0x0"
+}
+
+; One-line description of a window. Includes class, trimmed title, pid, exstyle,
+; owner hwnd, and visibility. Every lookup is wrapped in try so a hwnd that
+; disappears between calls doesn't abort the log line.
+DbgZDescribe(hwnd) {
+    if !hwnd
+        return "hwnd=0x0"
+    cls := "" , title := "" , pid := 0 , ex := 0 , ownr := 0 , vis := 0
+    try cls := WinGetClass("ahk_id " hwnd)
+    try title := WinGetTitle("ahk_id " hwnd)
+    try pid := WinGetPID("ahk_id " hwnd)
+    try ex := GetWindowLongPtrValue(hwnd, -20)  ; GWL_EXSTYLE
+    try ownr := DllCall("GetWindow", "ptr", hwnd, "uint", 4, "ptr")  ; GW_OWNER
+    try vis := DllCall("IsWindowVisible", "ptr", hwnd, "int")
+    if StrLen(title) > 48
+        title := SubStr(title, 1, 45) "..."
+    ; Strip newlines from title so the log stays one-record-per-line.
+    title := StrReplace(StrReplace(title, "`r", " "), "`n", " ")
+    return Format("{} pid={} cls={} title=`"{}`" ex=0x{:x} owner={} vis={}"
+        , DbgZHex(hwnd), pid, cls, title, ex, DbgZHex(ownr), vis)
+}
+
+; Returns a multi-line snapshot string of up to `limit` visible top-level
+; windows, top-to-bottom in z-order. Every entry is a self-contained record.
+DbgZSnapshot(limit := 20) {
+    out := ""
+    count := 0
+    hwnd := DllCall("GetTopWindow", "ptr", 0, "ptr")
+    while hwnd && count < limit {
+        if DllCall("IsWindowVisible", "ptr", hwnd, "int") {
+            out .= "  [" count "] " DbgZDescribe(hwnd) "`r`n"
+            count++
+        }
+        hwnd := DllCall("GetWindow", "ptr", hwnd, "uint", 2, "ptr")
+    }
+    ; Trim trailing CRLF so DbgZ's own CRLF doesn't produce a blank line.
+    return RTrim(out, "`r`n")
+}
+
+; Log the state just before a SetWindowPos against the host.
+DbgZBefore(action, hostHwnd, anchorHwnd, reason) {
+    DbgZ(action " BEFORE host=" DbgZHex(hostHwnd)
+        . (anchorHwnd ? " anchor=" DbgZHex(anchorHwnd) : "")
+        . (reason ? " reason=" reason : ""))
+}
+
+; Log the return value + last error just after a SetWindowPos against the host.
+DbgZAfter(action, hostHwnd, anchorHwnd, ret, err) {
+    DbgZ(action " AFTER  host=" DbgZHex(hostHwnd)
+        . (anchorHwnd ? " anchor=" DbgZHex(anchorHwnd) : "")
+        . " ret=" ret " lastError=" err)
+}
+
+; Initializes the debug log at startup. The header is written *unconditionally*
+; so we can always confirm three things without needing the debug flag on:
+;   1. the script is running the current build,
+;   2. the config was parsed and what values were picked up,
+;   3. the script directory is writable.
+; The verbose trace (FG/SHOW/ENFORCE/etc.) is still gated on
+; Config.KeepAboveTabAppsDebug via DbgZ's own check.
+InitZOrderDebugLog() {
+    path := DbgZPath()
+    try FileDelete(path)
+    try {
+        hdr := "=== StackTabs z-order debug log ===`r`n"
+        hdr .= "started " FormatTime(, "yyyy-MM-dd HH:mm:ss") "`r`n"
+        hdr .= "script " A_ScriptFullPath "`r`n"
+        hdr .= "pid " ProcessExist() "`r`n"
+        hdr .= "KeepAboveTabApps=" (Config.KeepAboveTabApps ? "1" : "0") "`r`n"
+        hdr .= "KeepAboveTabAppsDebug=" (Config.KeepAboveTabAppsDebug ? "1" : "0") "`r`n"
+        hdr .= "DebugDiscovery=" (Config.DebugDiscovery ? "1" : "0") "`r`n"
+        hdr .= "--- raw IniRead diagnostics (from " Config.ConfigPath ") ---`r`n"
+        for key in ["KeepAboveTabApps","KeepAboveTabAppsDebug","DebugDiscovery"] {
+            raw := ""
+            try raw := IniRead(Config.ConfigPath, "General", key, "<missing>")
+            hdr .= "  raw[" key "] = `"" raw "`" (len=" StrLen(raw) ")`r`n"
+        }
+        hdr .= "--- end raw ---`r`n"
+        hdr .= "TargetExe=" Config.TargetExe "`r`n"
+        hdr .= "Matches="
+        for i, m in Config.WindowTitleMatches
+            hdr .= (i > 1 ? "|" : "") m
+        hdr .= "`r`n"
+        hdr .= (Config.KeepAboveTabAppsDebug
+            ? "verbose trace: ON (events will follow below)"
+            : "verbose trace: OFF - set KeepAboveTabAppsDebug=1 in [General] and restart to enable")
+        hdr .= "`r`n===`r`n"
+        FileAppend(hdr, path, "UTF-8")
+    } catch as err {
+        ; If writing the header fails (e.g. read-only install dir), surface it
+        ; via the tray tooltip so the user isn't left wondering why the log
+        ; never appears. Non-fatal.
+        try A_IconTip := "StackTabs: cannot write debug log to " path
+    }
+    if Config.KeepAboveTabAppsDebug {
+        DbgZ("BOOT initial z-order snapshot:")
+        DbgZ(DbgZSnapshot())
+    }
 }
 
 ; Forces window to redraw (invalidates and updates).
@@ -3058,8 +3521,13 @@ _StillActiveUpdateNow(host, chw, *) {
         return
     if !IsWindowExists(chw)
         return
+    ; Flag correction: 0x0400 is RDW_FRAME, not RDW_ALLCHILDREN (0x0080). The original
+    ; comment misnamed the value, which meant UPDATENOW never descended into child hwnds.
+    ; WPF windows host their render surface in an HwndSource child, so without ALLCHILDREN
+    ; the visual tree never received WM_PAINT and stayed blank. Keep FRAME too so a frame-
+    ; changed state still repaints correctly.
     DllCall("RedrawWindow", "ptr", chw, "ptr", 0, "ptr", 0
-        , "uint", 0x0001 | 0x0004 | 0x0100 | 0x0400)  ; INVALIDATE|ERASE|UPDATENOW|ALLCHILDREN
+        , "uint", 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400)  ; INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW|FRAME
 }
 
 ; ============ ICON ============

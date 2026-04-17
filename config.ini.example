@@ -25,7 +25,8 @@ WatchdogMaxMs=1500          ; Max wait for hung windows before giving up.
 TabDisappearGraceMs=300     ; Grace period before removing a tab whose window closed.
 
 ; DebugDiscovery=0          ; Set to 1 to log window discovery events (Win+Shift+D to dump).
-; BumpOnChildDialog=0       ; Set to 1 to bring StackTabs forward when an embedded app opens a dialog.
+; KeepAboveTabApps=0        ; Set to 1 to keep the host above the tracked app's main shell while letting its popups/dialogs stay on top. Also reparents dialogs to the host so they stick above it via the OS owner rule.
+; KeepAboveTabAppsDebug=0   ; Set to 1 (with KeepAboveTabApps=1) to write a verbose z-order trace to debug-zorder.log. Use for troubleshooting only - the file grows quickly.
 
 [Layout]
 ; --- Host window ---

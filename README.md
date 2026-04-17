@@ -83,7 +83,7 @@ Edit `config.ini` (copy from `config.ini.example` if needed). **Restart StackTab
 | `WatchdogMaxMs` | `1500` | Max time to wait on a stubborn window before skipping it. |
 | `TabDisappearGraceMs` | `300` | Grace before removing a tab whose window vanished. |
 | `DebugDiscovery` | `0` | `1` = log discovery to `discovery.txt` and enable `Win+Shift+D` dump. |
-| `BumpOnChildDialog` | `0` | `1` = bring the StackTabs host forward when an embedded app opens another top-level window (e.g. some modals), using process ID so the right host is chosen. |
+| `KeepAboveTabApps` | `0` | `1` (recommended) = continuously keep the StackTabs host above any visible unowned window of a tracked tab's process, while letting that process's popups/dialogs stay on top. Handles apps that periodically raise their main shell (via `BringWindowToTop` or an internal z-order change) without moving focus, as well as dialogs that would otherwise become buried below the host. Focus is never changed; only visual z-order is adjusted. |
 
 ### `[Layout]` — Host and tab bar
 
@@ -153,7 +153,7 @@ StackSwitchDelayMs=150
 WatchdogMaxMs=1500
 TabDisappearGraceMs=300
 DebugDiscovery=0
-BumpOnChildDialog=0
+KeepAboveTabApps=0
 
 [Layout]
 HostTitle=StackTabs
@@ -234,7 +234,7 @@ Tab ID shape: `processName|rootOwner|normalizedTitle|contentClass` (see code com
 | Situation | What to expect |
 |-----------|----------------|
 | Aggressive HWND recycling | Rebind + grace period before dropping a tab |
-| Some dialogs / pickers | Separate top-level windows; optional `BumpOnChildDialog=1` |
+| Some dialogs / pickers | Separate top-level windows; covered by `KeepAboveTabApps=1` |
 | Weird hierarchies | `DebugDiscovery=1` and `Win+Shift+D` |
 | Focus in embedded apps | Cross-process focus uses `AttachThreadInput`; some apps still need a click |
 
