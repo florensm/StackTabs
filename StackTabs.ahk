@@ -932,12 +932,14 @@ SwitcherCtrlRelease() {
     if !State.MainHost
         return
 
-    if IsWindowExists(State.MainHost.hwnd) && WinActive("ahk_id " State.MainHost.hwnd)
+    if IsWindowExists(State.MainHost.hwnd) && WinActive("ahk_id " State.MainHost.hwnd) {
+        State.MainHost.hiddenByUserToggle := true
         State.MainHost.gui.Hide()
-    else {
+    } else {
         if Config.ShowOnlyWhenTabs && GetLiveTabCount(State.MainHost) = 0
             return
         State.MainHost.dismissedByClose := false
+        State.MainHost.hiddenByUserToggle := false
         State.MainHost.gui.Show()
         ShowOnlyActiveTab(State.MainHost)
     }
@@ -1133,8 +1135,11 @@ BuildHostInstance(isPopout := false) {
     host.isPopout := isPopout
     ; Main host: user clicked the X — hide to tray but keep running. While hidden this way,
     ; do not auto-resurface on timers unless a new tab is stacked (WatchdogPostStackUpdate).
-    if !isPopout
+    if !isPopout {
         host.dismissedByClose := false
+        ; Win+Shift+T hide: do not auto-resurface on RefreshWindows until user shows again or a tab is stacked.
+        host.hiddenByUserToggle := false
+    }
     host.tabRecords := Map()
     host.tabOrder := []
     host.activeTabId := ""
@@ -1192,24 +1197,11 @@ BuildHostInstance(isPopout := false) {
     return host
 }
 
-; Counts tabs whose embedded client HWND still exists.
-MainHostLiveTabCount() {
-    if !State.MainHost
-        return 0
-    n := 0
-    for tabId in State.MainHost.tabOrder {
-        if State.MainHost.tabRecords.Has(tabId)
-            && IsWindowExists(State.MainHost.tabRecords[tabId].contentHwnd)
-            n++
-    }
-    return n
-}
-
-; Returns true if the main host window exists and has the WS_VISIBLE style.
+; Returns true if Windows considers the main host window visible (WS_VISIBLE + parent chain).
 MainHostIsWindowVisible() {
     if !State.MainHost || !State.MainHost.hwnd || !IsWindowExists(State.MainHost.hwnd)
         return false
-    return (GetWindowLongPtrValue(State.MainHost.hwnd, -16) & 0x10000000) != 0  ; WS_VISIBLE
+    return DllCall("IsWindowVisible", "ptr", State.MainHost.hwnd, "int")
 }
 
 ; Keeps main host visibility in sync with ShowOnlyWhenTabs and live tab count.
@@ -1220,15 +1212,22 @@ UpdateMainHostVisibilityPolicy() {
         return
     if State.MainHost.isPopout
         return
-    live := MainHostLiveTabCount()
+    ; Use tab count, not live HWND checks: during attach/reparent the client HWND can briefly
+    ; look "dead" to IsWindow while we still have a real tab — live=0 would incorrectly Hide().
+    hasTabs := State.MainHost.tabOrder.Length >= 1
+    dismissed := State.MainHost.HasProp("dismissedByClose") && State.MainHost.dismissedByClose
+    toggleHidden := State.MainHost.HasProp("hiddenByUserToggle") && State.MainHost.hiddenByUserToggle
     if Config.ShowOnlyWhenTabs {
-        if live >= 1 {
-            if !MainHostIsWindowVisible()
-                State.MainHost.gui.Show("NoActivate")
-        } else
+        if !hasTabs {
             State.MainHost.gui.Hide()
+            return
+        }
+        if dismissed || toggleHidden
+            return
+        if !MainHostIsWindowVisible()
+            State.MainHost.gui.Show("NoActivate")
     } else {
-        if State.MainHost.HasProp("dismissedByClose") && State.MainHost.dismissedByClose
+        if dismissed || toggleHidden
             return
         if !MainHostIsWindowVisible()
             State.MainHost.gui.Show("NoActivate")
@@ -1414,6 +1413,7 @@ WatchdogPostStackUpdate(*) {
     ; New tab stacked: surface the host even if the user previously dismissed it with the X.
     if State.MainHost.tabOrder.Length >= 1 {
         State.MainHost.dismissedByClose := false
+        State.MainHost.hiddenByUserToggle := false
         UpdateHostTitle(State.MainHost)
         ; First appearance may activate intentionally; later visibility is handled by UpdateMainHostVisibilityPolicy.
         if !MainHostIsWindowVisible()
