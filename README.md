@@ -199,13 +199,13 @@ ThemeFile=dark.ini
 - **Pop-out and merge** — Detach a tab to its own host window or pull it back.
 - **Ctrl+Tab switcher** — Overlay with live preview; commit on Ctrl release or Enter.
 - **Themes** — Colors, fonts, and optional layout overrides from `themes\*.ini` ([themes/README.md](themes/README.md)).
-- **Tray** — Theme picker, open themes folder, exit; the icon reflects the active tab’s application where possible.
+- **Tray** — Theme picker, open themes folder, reload, exit; the icon reflects the active tab’s application where possible.
 
 ---
 
 ## Tray menu
 
-Right-click the tray icon: **Theme**, **Open themes folder**, **Exit**.
+Right-click the tray icon: **Theme**, **Open themes folder**, **Reload**, **Exit**.
 
 ---
 

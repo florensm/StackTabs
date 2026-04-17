@@ -375,35 +375,9 @@ UpdateTrayTip() {
     try A_IconTip := tip
 }
 
-; Tray / menu: show the main host and clear hide-to-tray flags. No-op when there are no tabs
-; — the host is empty anyway and auto-hides when the tab count reaches zero.
-ShowMainHostFromTray(*) {
-    if !State.MainHost || !State.MainHost.gui || !IsWindowExists(State.MainHost.hwnd)
-        return
-    mh := State.MainHost
-    if mh.tabOrder.Length = 0
-        return
-    mh.dismissedByClose := false
-    mh.hiddenByUserToggle := false
-    mh.gui.Show()
-    UpdateMainHostVisibilityPolicy()
-    LayoutTabButtons(mh)
-    ShowOnlyActiveTab(mh)
-    UpdateHostTitle(mh)
-    RedrawAnyWindow(mh.hwnd)
-    try WinActivate("ahk_id " mh.hwnd)
-    if mh.activeTabId && mh.tabRecords.Has(mh.activeTabId) {
-        rec := mh.tabRecords[mh.activeTabId]
-        if IsWindowExists(rec.contentHwnd)
-            FocusEmbeddedContent(mh.hwnd, rec.contentHwnd)
-    }
-}
-
-; Builds tray menu with theme submenu, themes folder link, and Exit.
+; Builds tray menu with theme submenu, themes folder link, Reload, and Exit.
 BuildTrayMenu() {
     A_TrayMenu.Delete()
-    A_TrayMenu.Add("Show window", ShowMainHostFromTray)
-    A_TrayMenu.Add()
     themeSubMenu := Menu()
     themesDir := Config.ThemesDir
     if DirExist(themesDir) {
@@ -434,7 +408,6 @@ BuildTrayMenu() {
     A_TrayMenu.Add()
     A_TrayMenu.Add("Reload", (*) => Reload())
     A_TrayMenu.Add("Exit", (*) => ExitApp())
-    try A_TrayMenu.Default := "Show window"
     UpdateTrayTip()
 }
 
