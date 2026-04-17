@@ -981,6 +981,12 @@ FocusEmbeddedContent(hostHwnd, contentHwnd) {
 OnWmActivate(wParam, lParam, msg, hwnd) {
     if (wParam & 0xFFFF) = 0  ; being deactivated, not activated
         return
+    ; Don't fight the Ctrl+Tab switcher overlay for focus. The host may receive
+    ; WM_ACTIVATE while the overlay is open (the overlay is +AlwaysOnTop but the
+    ; host redraws underneath during preview); refocusing the embedded content
+    ; here triggers a tug-of-war with SwitcherFocusGui and stacks paint messages.
+    if State.SwitcherGui
+        return
     if !State.HostByHwnd.Has(hwnd "")
         return
     host := State.HostByHwnd[hwnd ""]
