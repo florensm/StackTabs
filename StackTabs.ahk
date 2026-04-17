@@ -132,7 +132,8 @@ State := {
     SwitcherCtrlTabMode: false,
     SwitcherOrigTabIdx: 0,
     ZOrderEnforcerFn: "",      ; bound EnforceZOrderTick closure; "" = not running
-    ZOrderEnforceBusy: false   ; reentrancy guard for EnforceHostZOrder
+    ZOrderEnforceBusy: false,  ; reentrancy guard for EnforceHostZOrder
+    LastActiveTrackedPopup: ""  ; { host, hwnd } of the last tracked owned window that was foreground; used to redirect focus to the host when the popup closes
 }
 
 ; Returns the scalar value of an INI entry with any inline "; ..." comment
@@ -3124,6 +3125,9 @@ OnForegroundChanged(hwnd) {
             return
         if Config.KeepAboveTabAppsDebug
             DbgZ("FG " DbgZDescribe(hwnd))
+        ; Whether the foreground window is owned (popup/dialog) or top-level
+        ; (main shell). Used to remember popups and detect close transitions.
+        fgOwner := DllCall("GetWindow", "ptr", hwnd, "uint", 4, "ptr")  ; GW_OWNER
         for host in GetAllHosts() {
             if !host.hwnd || !IsWindowExists(host.hwnd)
                 continue
@@ -3138,9 +3142,51 @@ OnForegroundChanged(hwnd) {
                 if Config.KeepAboveTabAppsDebug
                     DbgZ("  FG matched host=" DbgZHex(host.hwnd) " -> Enforce(reason=fg)")
                 EnforceHostZOrder(host, "fg")
+                ; Focus-follow: when the app's popup/dialog is dismissed, Windows
+                ; activates the popup's managed Owner (typically the app's main
+                ; shell) rather than the host. Detect the transition
+                ;   tracked popup FG  ->  tracked main shell FG
+                ; and, if the popup is gone, send focus to the host that was
+                ; hosting the tab the popup belonged to. This mirrors the
+                ; "work on host, popup in front, close popup, keep working on
+                ; host" mental model that KeepAboveTabApps aims for.
+                if fgOwner {
+                    ; FG is a tracked popup/dialog; remember for close detection.
+                    State.LastActiveTrackedPopup := { host: host, hwnd: hwnd }
+                } else {
+                    ; FG is a tracked main shell. If the last tracked popup
+                    ; for this same host is destroyed or hidden, the user just
+                    ; closed it; redirect focus to the host.
+                    prev := State.LastActiveTrackedPopup
+                    if IsObject(prev) && prev.host = host {
+                        popupGone := !IsWindowExists(prev.hwnd)
+                            || !DllCall("IsWindowVisible", "ptr", prev.hwnd, "int")
+                        if popupGone {
+                            if Config.KeepAboveTabAppsDebug
+                                DbgZ("  popup " DbgZHex(prev.hwnd) " gone -> activating host " DbgZHex(host.hwnd))
+                            ; Small delay lets the app's own post-close
+                            ; activation settle before we override it.
+                            SetTimer(ActivateHostAfterPopupClose.Bind(host), -50)
+                        }
+                        State.LastActiveTrackedPopup := ""
+                    }
+                }
             }
         }
     }
+}
+
+; Called from a timer after a tracked popup has closed and foreground has
+; landed on the app's main shell. Activates the host so the user's focus
+; returns to what they were working on rather than the app's main shell.
+ActivateHostAfterPopupClose(host) {
+    if !host || !host.hwnd || !IsWindowExists(host.hwnd)
+        return
+    if !DllCall("IsWindowVisible", "ptr", host.hwnd, "int")
+        return
+    try WinActivate("ahk_id " host.hwnd)
+    if Config.KeepAboveTabAppsDebug
+        DbgZ("ActivateHostAfterPopupClose host=" DbgZHex(host.hwnd))
 }
 
 ; Positions the host directly below `aboveHwnd` in the z-order without moving,
