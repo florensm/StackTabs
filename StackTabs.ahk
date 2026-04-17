@@ -499,6 +499,7 @@ State.CachedFont := Map()
 State.CachedStringFormat := 0
 State.GdipShutdownPending := false
 BuildHostInstance(false)  ; create main host
+UpdateMainHostVisibilityPolicy()
 ; Shell Hook for event-driven window discovery
 DllCall("RegisterShellHookWindow", "Ptr", State.MainHost.hwnd)
 State.ShellHookMsg := DllCall("RegisterWindowMessage", "Str", "SHELLHOOK", "UInt")
@@ -936,6 +937,7 @@ SwitcherCtrlRelease() {
     else {
         if Config.ShowOnlyWhenTabs && GetLiveTabCount(State.MainHost) = 0
             return
+        State.MainHost.dismissedByClose := false
         State.MainHost.gui.Show()
         ShowOnlyActiveTab(State.MainHost)
     }
@@ -1129,6 +1131,10 @@ BuildHostInstance(isPopout := false) {
 
     host := Object()
     host.isPopout := isPopout
+    ; Main host: user clicked the X — hide to tray but keep running. While hidden this way,
+    ; do not auto-resurface on timers unless a new tab is stacked (WatchdogPostStackUpdate).
+    if !isPopout
+        host.dismissedByClose := false
     host.tabRecords := Map()
     host.tabOrder := []
     host.activeTabId := ""
@@ -1186,6 +1192,49 @@ BuildHostInstance(isPopout := false) {
     return host
 }
 
+; Counts tabs whose embedded client HWND still exists.
+MainHostLiveTabCount() {
+    if !State.MainHost
+        return 0
+    n := 0
+    for tabId in State.MainHost.tabOrder {
+        if State.MainHost.tabRecords.Has(tabId)
+            && IsWindowExists(State.MainHost.tabRecords[tabId].contentHwnd)
+            n++
+    }
+    return n
+}
+
+; Returns true if the main host window exists and has the WS_VISIBLE style.
+MainHostIsWindowVisible() {
+    if !State.MainHost || !State.MainHost.hwnd || !IsWindowExists(State.MainHost.hwnd)
+        return false
+    return (GetWindowLongPtrValue(State.MainHost.hwnd, -16) & 0x10000000) != 0  ; WS_VISIBLE
+}
+
+; Keeps main host visibility in sync with ShowOnlyWhenTabs and live tab count.
+; When ShowOnlyWhenTabs is off, the empty host must still be shown — it is created hidden
+; (same as popouts) to avoid tiling WM first-paint quirks, then surfaced here.
+UpdateMainHostVisibilityPolicy() {
+    if !State.MainHost || !State.MainHost.hwnd || !IsWindowExists(State.MainHost.hwnd)
+        return
+    if State.MainHost.isPopout
+        return
+    live := MainHostLiveTabCount()
+    if Config.ShowOnlyWhenTabs {
+        if live >= 1 {
+            if !MainHostIsWindowVisible()
+                State.MainHost.gui.Show("NoActivate")
+        } else
+            State.MainHost.gui.Hide()
+    } else {
+        if State.MainHost.HasProp("dismissedByClose") && State.MainHost.dismissedByClose
+            return
+        if !MainHostIsWindowVisible()
+            State.MainHost.gui.Show("NoActivate")
+    }
+}
+
 ; Handles host close: restores tabs to main (popout) or hides main host (keeps script running).
 HostGuiClosed(host, *) {
     if host.isPopout {
@@ -1209,6 +1258,7 @@ HostGuiClosed(host, *) {
         }
         host.gui.Destroy()
     } else {
+        host.dismissedByClose := true
         host.gui.Hide()
         return true  ; Prevent default close (keep script running in tray)
     }
@@ -1361,14 +1411,15 @@ WatchdogCheck(*) {
 WatchdogPostStackUpdate(*) {
     if !State.MainHost
         return
-    ; Only call Show when the window is actually hidden — avoids repositioning an already-visible window.
-    if Config.ShowOnlyWhenTabs && State.MainHost.tabOrder.Length >= 1 {
-        if !(GetWindowLongPtrValue(State.MainHost.hwnd, -16) & 0x10000000) {  ; WS_VISIBLE
-            ; Set title before Show so tiling WMs see the final title on EVENT_OBJECT_SHOW.
-            UpdateHostTitle(State.MainHost)
-            State.MainHost.gui.Show()  ; Show() activates by default; intentional for first appearance.
-        }
+    ; New tab stacked: surface the host even if the user previously dismissed it with the X.
+    if State.MainHost.tabOrder.Length >= 1 {
+        State.MainHost.dismissedByClose := false
+        UpdateHostTitle(State.MainHost)
+        ; First appearance may activate intentionally; later visibility is handled by UpdateMainHostVisibilityPolicy.
+        if !MainHostIsWindowVisible()
+            State.MainHost.gui.Show()
     }
+    UpdateMainHostVisibilityPolicy()
     LayoutTabButtons(State.MainHost)
     ShowOnlyActiveTab(State.MainHost)
     UpdateHostTitle(State.MainHost)
@@ -1724,19 +1775,7 @@ RefreshWindows(*) {
         UpdateHostTitle(host)
     }
 
-    ; When ShowOnlyWhenTabs is on, keep the main host hidden at 0 tabs and visible at 1+ tabs.
-    if Config.ShowOnlyWhenTabs && State.MainHost && IsWindowExists(State.MainHost.hwnd) {
-        liveCount := 0
-        for tabId in State.MainHost.tabOrder {
-            if State.MainHost.tabRecords.Has(tabId) && IsWindowExists(State.MainHost.tabRecords[tabId].contentHwnd)
-                liveCount++
-        }
-        if liveCount >= 1 {
-            if !WinExist("ahk_id " State.MainHost.hwnd)
-                State.MainHost.gui.Show("NoActivate")
-        } else
-            State.MainHost.gui.Hide()
-    }
+    UpdateMainHostVisibilityPolicy()
 
     ; Fallback: destroy any popout hosts that ended up empty (e.g. stale-tab cleanup left them blank).
     emptyPopouts := []
