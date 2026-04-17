@@ -3012,16 +3012,38 @@ DeferredRepaintCheck(host, *) {
     ; it would be handled by the default Static WndProc instead of OnTabCanvasPaint, corrupting
     ; the tab bar. Scheduling 20 ms out lets the message loop drain the tab-canvas WM_PAINT
     ; through OnTabCanvasPaint first, so UPDATENOW on the foreign window is safe.
+    ;
+    ; The timer is tracked on host so rapid tab switches cancel the previous pending UPDATENOW.
+    ; Without cancellation, a stale UPDATENOW could fire against the hwnd of an already-replaced
+    ; active tab, pumping messages mid-switch and causing blank content.
     if host.activeTabId && host.tabRecords.Has(host.activeTabId) {
         activeRecord := host.tabRecords[host.activeTabId]
         if IsWindowExists(activeRecord.contentHwnd) {
             chw := activeRecord.contentHwnd
-            SetTimer(() => (IsWindowExists(chw)
-                ? DllCall("RedrawWindow", "ptr", chw, "ptr", 0, "ptr", 0
-                    , "uint", 0x0001 | 0x0004 | 0x0100 | 0x0400)  ; INVALIDATE|ERASE|UPDATENOW|ALLCHILDREN
-                : 0), -20)
+            if host.HasProp("pendingUpdateNowFn") && host.pendingUpdateNowFn
+                SetTimer(host.pendingUpdateNowFn, 0)
+            host.pendingUpdateNowFn := _StillActiveUpdateNow.Bind(host, chw)
+            SetTimer(host.pendingUpdateNowFn, -20)
         }
     }
+}
+
+; Secondary UPDATENOW callback scheduled by DeferredRepaintCheck.
+; Validates chw is still the active tab's content before firing the cross-process WM_PAINT,
+; so a rapid switch that replaces the active tab skips a stale repaint cleanly.
+_StillActiveUpdateNow(host, chw, *) {
+    if host.HasProp("pendingUpdateNowFn")
+        host.pendingUpdateNowFn := ""
+    if !host || !host.hwnd || !IsWindowExists(host.hwnd)
+        return
+    if !host.activeTabId || !host.tabRecords.Has(host.activeTabId)
+        return
+    if host.tabRecords[host.activeTabId].contentHwnd != chw
+        return
+    if !IsWindowExists(chw)
+        return
+    DllCall("RedrawWindow", "ptr", chw, "ptr", 0, "ptr", 0
+        , "uint", 0x0001 | 0x0004 | 0x0100 | 0x0400)  ; INVALIDATE|ERASE|UPDATENOW|ALLCHILDREN
 }
 
 ; ============ ICON ============
