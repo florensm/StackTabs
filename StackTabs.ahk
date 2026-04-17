@@ -359,9 +359,53 @@ DetectIconFont() {
     Config.ThemeIconFont := "Segoe MDL2 Assets"
 }
 
+; Tray icon tooltip: main host tab count and active tab title (Windows truncates long tips).
+UpdateTrayTip() {
+    if !State.MainHost || !State.MainHost.gui {
+        try A_IconTip := Config.HostTitle
+        return
+    }
+    live := GetLiveTabCount(State.MainHost)
+    tip := Config.HostTitle " — " live " tab(s)"
+    if State.MainHost.activeTabId != "" && State.MainHost.tabRecords.Has(State.MainHost.activeTabId) {
+        t := State.MainHost.tabRecords[State.MainHost.activeTabId].title
+        if t != ""
+            tip .= " — " t
+    }
+    if StrLen(tip) > 127
+        tip := SubStr(tip, 1, 124) "..."
+    try A_IconTip := tip
+}
+
+; Tray / menu: show the main host, clear hide-to-tray flags, optionally keep empty host
+; visible when ShowOnlyWhenTabs is on (until a tab is stacked or the user closes from the caption).
+ShowMainHostFromTray(*) {
+    if !State.MainHost || !State.MainHost.gui || !IsWindowExists(State.MainHost.hwnd)
+        return
+    mh := State.MainHost
+    mh.dismissedByClose := false
+    mh.hiddenByUserToggle := false
+    if Config.ShowOnlyWhenTabs && mh.tabOrder.Length = 0
+        mh.showEmptyWhileIdle := true
+    mh.gui.Show()
+    UpdateMainHostVisibilityPolicy()
+    LayoutTabButtons(mh)
+    ShowOnlyActiveTab(mh)
+    UpdateHostTitle(mh)
+    RedrawAnyWindow(mh.hwnd)
+    try WinActivate("ahk_id " mh.hwnd)
+    if mh.activeTabId && mh.tabRecords.Has(mh.activeTabId) {
+        rec := mh.tabRecords[mh.activeTabId]
+        if IsWindowExists(rec.contentHwnd)
+            FocusEmbeddedContent(mh.hwnd, rec.contentHwnd)
+    }
+}
+
 ; Builds tray menu with theme submenu, themes folder link, and Exit.
 BuildTrayMenu() {
     A_TrayMenu.Delete()
+    A_TrayMenu.Add("Show window", ShowMainHostFromTray)
+    A_TrayMenu.Add()
     themeSubMenu := Menu()
     themesDir := Config.ThemesDir
     if DirExist(themesDir) {
@@ -392,6 +436,8 @@ BuildTrayMenu() {
     A_TrayMenu.Add()
     A_TrayMenu.Add("Reload", (*) => Reload())
     A_TrayMenu.Add("Exit", (*) => ExitApp())
+    try A_TrayMenu.Default := "Show window"
+    UpdateTrayTip()
 }
 
 ; Converts theme filename (e.g. "dark-blue.ini") to display name ("Dark Blue").
@@ -500,6 +546,7 @@ State.CachedStringFormat := 0
 State.GdipShutdownPending := false
 BuildHostInstance(false)  ; create main host
 UpdateMainHostVisibilityPolicy()
+UpdateTrayTip()
 ; Shell Hook for event-driven window discovery
 DllCall("RegisterShellHookWindow", "Ptr", State.MainHost.hwnd)
 State.ShellHookMsg := DllCall("RegisterWindowMessage", "Str", "SHELLHOOK", "UInt")
@@ -1139,6 +1186,8 @@ BuildHostInstance(isPopout := false) {
         host.dismissedByClose := false
         ; Win+Shift+T hide: do not auto-resurface on RefreshWindows until user shows again or a tab is stacked.
         host.hiddenByUserToggle := false
+        ; Tray "Show window" with zero tabs: keep host visible until a tab exists or user closes from caption.
+        host.showEmptyWhileIdle := false
     }
     host.tabRecords := Map()
     host.tabOrder := []
@@ -1215,10 +1264,17 @@ UpdateMainHostVisibilityPolicy() {
     ; Use tab count, not live HWND checks: during attach/reparent the client HWND can briefly
     ; look "dead" to IsWindow while we still have a real tab — live=0 would incorrectly Hide().
     hasTabs := State.MainHost.tabOrder.Length >= 1
+    if hasTabs
+        State.MainHost.showEmptyWhileIdle := false
     dismissed := State.MainHost.HasProp("dismissedByClose") && State.MainHost.dismissedByClose
     toggleHidden := State.MainHost.HasProp("hiddenByUserToggle") && State.MainHost.hiddenByUserToggle
     if Config.ShowOnlyWhenTabs {
         if !hasTabs {
+            if State.MainHost.HasProp("showEmptyWhileIdle") && State.MainHost.showEmptyWhileIdle {
+                if !MainHostIsWindowVisible()
+                    State.MainHost.gui.Show("NoActivate")
+                return
+            }
             State.MainHost.gui.Hide()
             return
         }
@@ -1258,6 +1314,7 @@ HostGuiClosed(host, *) {
         host.gui.Destroy()
     } else {
         host.dismissedByClose := true
+        host.showEmptyWhileIdle := false
         host.gui.Hide()
         return true  ; Prevent default close (keep script running in tray)
     }
@@ -1414,6 +1471,7 @@ WatchdogPostStackUpdate(*) {
     if State.MainHost.tabOrder.Length >= 1 {
         State.MainHost.dismissedByClose := false
         State.MainHost.hiddenByUserToggle := false
+        State.MainHost.showEmptyWhileIdle := false
         UpdateHostTitle(State.MainHost)
         ; First appearance may activate intentionally; later visibility is handled by UpdateMainHostVisibilityPolicy.
         if !MainHostIsWindowVisible()
@@ -2907,6 +2965,8 @@ UpdateHostTitle(host) {
     host.lastRefreshTitle := title
     host.gui.Title := title
     UpdateHostIcon(host)
+    if !host.isPopout && State.MainHost && host.hwnd = State.MainHost.hwnd
+        UpdateTrayTip()
 }
 
 ; Computes content area rect (x, y, w, h) for embedded windows.
