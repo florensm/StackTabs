@@ -589,9 +589,13 @@ SwitcherPreviewSelected() {
     if !IsWindowExists(contentHwnd)
         return
     item.host.activeTabId := item.tabId
-    ShowOnlyActiveTab(item.host)
+    ; Skip the deferred WPF-settle repaint during Ctrl-held preview: it schedules a
+    ; 50ms+20ms timer chain that piles up on rapid cycling. The final commit via
+    ; SelectTab (on Ctrl release or Enter) runs ShowOnlyActiveTab with deferred=true
+    ; so the settle pass still happens exactly once when the user lands on a tab.
+    ShowOnlyActiveTab(item.host, !State.SwitcherCtrlTabMode)
     UpdateHostTitle(item.host)
-    ; WinEvent NAMECHANGE may call SelectTab → FocusEmbeddedContent while previewing; keep overlay focused for Tab/J-K.
+    ; WinEvent NAMECHANGE may call SelectTab -> FocusEmbeddedContent while previewing; keep overlay focused for Tab/J-K.
     if State.SwitcherCtrlTabMode
         SwitcherFocusGui()
 }
