@@ -12,21 +12,24 @@
 Match1=PowerShell
 ; Match2=Notepad
 ; Match3=Visual Studio Code
-; Match4=""          ; captures untitled windows (pair with TargetExe)
+; Match4=""                    ; captures untitled windows (pair with TargetExe)
 
 ; Optional: limit to a specific process (e.g. pwsh.exe). Leave empty to match any process.
 TargetExe=
 
 ; --- Timing (all in milliseconds) ---
-SlowSweepInterval=3000      ; Fallback scan interval. Catches windows the Shell Hook might miss.
-StackDelayMs=100            ; Minimum wait before stacking (title must also be stable).
-StackSwitchDelayMs=150      ; Delay before switching to a newly stacked tab.
-WatchdogMaxMs=1500          ; Max wait for hung windows before giving up.
-TabDisappearGraceMs=300     ; Grace period before removing a tab whose window closed.
+SlowSweepInterval=3000         ; Fallback scan interval. Catches windows the Shell Hook might miss.
+StackDelayMs=100               ; Minimum wait before stacking (title must also be stable).
+StackSwitchDelayMs=150         ; Delay before switching to a newly stacked tab.
+WatchdogMaxMs=1500             ; Max wait for hung windows before giving up.
+TabDisappearGraceMs=300        ; Grace period before removing a tab whose window closed.
 
-; DebugDiscovery=0          ; Set to 1 to log window discovery events (Win+Shift+D to dump).
-; KeepAboveTabApps=0        ; Set to 1 to keep the host above the tracked app's main shell while letting its popups/dialogs stay on top. Also reparents dialogs to the host so they stick above it via the OS owner rule.
-; KeepAboveTabAppsDebug=0   ; Set to 1 (with KeepAboveTabApps=1) to write a verbose z-order trace to debug-zorder.log. Use for troubleshooting only - the file grows quickly.
+; --- Z-order (keep StackTabs above the tracked app) ---
+; KeepAboveTabApps=0           ; 1 = keep host above the tracked app's main shell while letting its popups/dialogs stay on top. Also reparents dialogs to the host so they stick above via the OS owner rule, and returns focus to the host after a popup closes.
+; KeepAboveTabAppsDebug=0      ; 1 (with KeepAboveTabApps=1) writes a verbose z-order trace to debug-zorder.log. Troubleshooting only - the file grows quickly.
+
+; --- Discovery debug ---
+; DebugDiscovery=0             ; 1 = log window discovery events (Win+Shift+D to dump).
 
 [Layout]
 ; --- Host window ---
@@ -35,36 +38,34 @@ HostWidth=1200
 HostHeight=800
 HostMinWidth=700
 HostMinHeight=500
-HostPadding=8               ; Padding around the tab bar (left/right/top).
+HostPadding=8                  ; Padding around the tab bar (left/right/top).
+
+; --- Host behavior ---
+ShowOnlyWhenTabs=1             ; 1 = hide to tray when no tabs; show when 1+ tabs. 0 = always show.
 
 ; --- Tab bar ---
-HeaderHeight=36             ; Height of the tab bar in pixels.
-TabHeight=30                ; Height of each tab button.
-TabBarAlignment=center      ; Vertical alignment of tabs within the bar: top, center, bottom.
-TabGap=6                    ; Gap between tabs in pixels.
+HeaderHeight=36                ; Height of the tab bar strip in pixels.
+TabPosition=top                ; top or bottom.
+TabBarAlignment=center         ; Vertical alignment of tabs within the bar: top, center, bottom.
+
+; --- Tabs ---
+TabHeight=30                   ; Height of each tab button.
+TabGap=6                       ; Gap between tabs in pixels.
 MinTabWidth=120
 MaxTabWidth=240
-
-; --- Tab titles ---
-; TabTitleMaxLen=60         ; Optional. Omit for fully dynamic (fits tab width). Set to cap titles shorter.
-TabMaxLines=1               ; 1 = single line with ellipsis; 2+ = word-wrap across multiple lines.
-TabTitleAlignH=center       ; Horizontal text alignment: left, center, right.
-TabTitleAlignV=center       ; Vertical text alignment: top, center. Ignored when TabMaxLines>=2 (always top).
-ShowTabNumbers=0            ; 1 = prefix titles with position: "1. Title", "2. Title", etc.
-
-; --- Tab buttons ---
 CloseButtonWidth=22
 PopoutButtonWidth=22
 
 ; --- Tab style ---
-TabPosition=top             ; Position of the tab bar: top or bottom.
-TabIndicatorHeight=3        ; Height of the active-tab indicator strip (px). 0 to disable.
-ActiveTabStyle=full         ; full = active tab has a distinct background; indicator = accent strip only.
+TabIndicatorHeight=3           ; Height of the active-tab indicator strip (px). 0 to disable.
+ActiveTabStyle=full            ; full = active tab has distinct background. indicator = accent strip only.
 
-; --- Behavior ---
-ShowOnlyWhenTabs=1          ; 1 = hide to tray when no tabs; show when 1+ tabs (default). 0 = always show.
-UseCustomTitleBar=0         ; 1 = custom title bar that matches the theme. 0 = system title bar.
-TitleBarHeight=28           ; Height of the custom title bar (only relevant when UseCustomTitleBar=1).
+; --- Tab titles ---
+; TabTitleMaxLen=60            ; Cap on characters shown. Omit or 9999 for fully dynamic (fits tab width).
+TabMaxLines=1                  ; 1 = single line + ellipsis. 2+ = wrap. (Bump TabHeight when wrapping.)
+TabTitleAlignH=center          ; Horizontal text alignment: left, center, right.
+TabTitleAlignV=center          ; Vertical text alignment: top, center, bottom. Forced to top when TabMaxLines>=2.
+ShowTabNumbers=0               ; 1 = prefix titles with position: "1. Title", "2. Title", etc.
 
 [Theme]
 ; Theme file from the themes\ folder.

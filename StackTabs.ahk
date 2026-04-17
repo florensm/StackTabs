@@ -49,7 +49,6 @@ Config := {
     MinTabWidth: 120,
     MaxTabWidth: 240,
     TabHeight: 30,
-    TabSlotMax: 50,
     CloseButtonWidth: 22,
     PopoutButtonWidth: 22,
     TabBarAlignment: "center",  ; top, center, or bottom — tabs aligned within the tab bar
@@ -197,7 +196,6 @@ LoadConfigFromIni() {
         Config.MinTabWidth := Integer(IniRead(iniPath, "Layout", "MinTabWidth", Config.MinTabWidth))
         Config.MaxTabWidth := Integer(IniRead(iniPath, "Layout", "MaxTabWidth", Config.MaxTabWidth))
         Config.TabHeight := Integer(IniRead(iniPath, "Layout", "TabHeight", Config.TabHeight))
-        Config.TabSlotMax := Integer(IniRead(iniPath, "Layout", "TabSlotMax", Config.TabSlotMax))
         Config.CloseButtonWidth := Integer(IniRead(iniPath, "Layout", "CloseButtonWidth", Config.CloseButtonWidth))
         Config.PopoutButtonWidth := Integer(IniRead(iniPath, "Layout", "PopoutButtonWidth", Config.PopoutButtonWidth))
         rawAlign := IniRead(iniPath, "Layout", "TabBarAlignment", "")
@@ -2717,6 +2715,13 @@ DrawTabBar(host) {
 
     alignHVal := (Config.TabTitleAlignH = "left") ? 0 : (Config.TabTitleAlignH = "right") ? 2 : 1
     alignVVal := (Config.TabTitleAlignV = "top") ? 0 : (Config.TabTitleAlignV = "bottom") ? 2 : 1
+    ; TabMaxLines=1: single line with ellipsis. 2+: allow GDI+ to wrap by
+    ; disabling the NoWrap flag. When wrapping, force top alignment so long
+    ; titles don't get half-clipped off the top of the tab (GDI+ fills down
+    ; from the start position rather than re-centering the wrapped block).
+    noWrapVal := (Config.TabMaxLines = 1)
+    if !noWrapVal
+        alignVVal := 0
 
     arrowW := 24
     usableWidth := Max(200, tabBarW - (Config.HostPadding * 2))
@@ -2800,7 +2805,7 @@ DrawTabBar(host) {
         GdipDrawStringSimple(pGraphics, rawTitle,
             x, tabOffsetY, titleWidth, Config.TabHeight,
             fgColor, Config.ThemeFontNameTab, Config.ThemeFontSize, isActive,
-            true, true, alignHVal, alignVVal)
+            noWrapVal, true, alignHVal, alignVVal)
 
         ; Popout / merge icon
         if Config.ShowPopoutButton {

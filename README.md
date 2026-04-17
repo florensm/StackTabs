@@ -98,10 +98,8 @@ Edit `config.ini` (copy from `config.ini.example` if needed). **Restart StackTab
 | `TabHeight` | `30` | Tab button height (px). |
 | `TabGap` | `6` | Gap between tabs (px). |
 | `MinTabWidth` / `MaxTabWidth` | `120` / `240` | Tab button width limits (px). |
-| `TabSlotMax` | `50` | Max visible tabs; additional tabs are off-screen in the strip. |
 | `CloseButtonWidth` / `PopoutButtonWidth` | `22` | Per-tab chrome (px). |
 | `TabBarAlignment` | `center` | `top`, `center`, or `bottom` within the bar. |
-| `TabBarOffsetY` | `-1` | Legacy offset; `-1` = use alignment. |
 | `TabPosition` | `top` | `top` or `bottom`. |
 | `TabIndicatorHeight` | `3` | Active indicator height (px); `0` = off. |
 | `TabCornerRadius` | `5` | Rounded corners (px); `0` = square. |
@@ -113,8 +111,8 @@ Edit `config.ini` (copy from `config.ini.example` if needed). **Restart StackTab
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TabTitleMaxLen` | *(omit)* | Optional max label length; omit for width-based dynamic truncation. |
-| `TabMaxLines` | `1` | `1` = one line + ellipsis; `2`+ = wrap. |
-| `TabTitleAlignH` / `TabTitleAlignV` | `center` | Horizontal / vertical alignment. |
+| `TabMaxLines` | `1` | `1` = one line + ellipsis; `2`+ = wrap. Bump `TabHeight` when wrapping so the second line fits. |
+| `TabTitleAlignH` / `TabTitleAlignV` | `center` | Horizontal / vertical alignment. `TabTitleAlignV` is forced to `top` when `TabMaxLines >= 2`. |
 | `ShowTabNumbers` | `0` | `1` = prefix with `1.`, `2.`, … |
 
 ### `[Theme]`
@@ -168,7 +166,6 @@ TabHeight=30
 TabGap=6
 MinTabWidth=120
 MaxTabWidth=240
-TabSlotMax=50
 CloseButtonWidth=22
 PopoutButtonWidth=22
 TabBarAlignment=center
