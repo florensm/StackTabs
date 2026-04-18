@@ -39,7 +39,6 @@ HostHeight=800
 HostMinWidth=700
 HostMinHeight=500
 HostPadding=8                  ; Padding around the tab bar (left/right/top).
-ContentCornerRadius=8          ; Rounded corner overlay on embedded content (0 = square). Visual only.
 TabBarShadowHeight=4           ; Gradient depth strip between tab bar and content (0 = off).
 
 ; --- Tab bar ---
