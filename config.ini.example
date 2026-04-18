@@ -39,11 +39,15 @@ HostHeight=800
 HostMinWidth=700
 HostMinHeight=500
 HostPadding=8                  ; Padding around the tab bar (left/right/top).
+ContentCornerRadius=8          ; Rounded corner overlay on embedded content (0 = square). Visual only.
+TabBarShadowHeight=4           ; Gradient depth strip between tab bar and content (0 = off).
 
 ; --- Tab bar ---
-HeaderHeight=36                ; Height of the tab bar strip in pixels.
-TabPosition=top                ; top or bottom.
-TabBarAlignment=center         ; Vertical alignment of tabs within the bar: top, center, bottom.
+HeaderHeight=36                ; Height of the tab bar strip in pixels (top/bottom TabPosition only).
+TabPosition=top                ; top, bottom, left, or right.
+VerticalTabWidth=160           ; Width of the tab bar when TabPosition=left or right.
+TabTitleOrientVertical=0       ; 1 = rotate tab titles 90° in vertical bar mode.
+TabBarAlignment=center         ; Vertical alignment of tabs within the bar: top, center, bottom (horizontal bar only).
 
 ; --- Tabs ---
 TabHeight=30                   ; Height of each tab button.
@@ -68,6 +72,7 @@ ShowTabNumbers=0               ; 1 = prefix titles with position: "1. Title", "2
 ; Theme file from the themes\ folder. Shipped: dark.ini, spacious.ini, tmux.ini, obsidian.ini, ink.ini, silk.ini, clay.ini.
 ; Custom themes: add .ini files next to those or under themes\custom\.
 ThemeFile=dark.ini
+; TabBarShadow=000000          ; RGB hex for tab-bar edge shadow gradient (optional; theme files may set this).
 
 [TitleFilters]
 ; Strip1/Strip2/... = regex patterns removed from window titles before display.

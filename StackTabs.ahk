@@ -51,10 +51,14 @@ Config := {
     TabHeight: 30,
     CloseButtonWidth: 22,
     PopoutButtonWidth: 22,
-    TabBarAlignment: "center",  ; top, center, or bottom — tabs aligned within the tab bar
-    TabPosition: "top",    ; "top" or "bottom"
+    TabBarAlignment: "center",  ; top, center, or bottom — tabs aligned within the tab bar (horizontal bar only)
+    TabPosition: "top",    ; top, bottom, left, or right
+    VerticalTabWidth: 160,   ; width of vertical tab bar (left/right TabPosition)
+    TabTitleOrientVertical: false,  ; rotate tab title 90° in vertical bar mode
     TabIndicatorHeight: 3,  ; height in px of the active-tab indicator strip; 0 to disable
     TabCornerRadius: 5,
+    ContentCornerRadius: 8,   ; rounded visual mask over embedded content corners (0 = off)
+    TabBarShadowHeight: 4,    ; drop-shadow strip thickness at tab bar / content edge (0 = off)
     ActiveTabStyle: "full",  ; "full" = active tab has different bg; "indicator" = only indicator strip, same bg as inactive
     KeepAboveTabApps: false,   ; Keep host above any window in a tracked tab's process whenever that process takes foreground, and reparent its dialogs to the host so they stay above it via the OS owner rule
     KeepAboveTabAppsDebug: false,  ; Verbose z-order trace to debug-zorder.log (paired with KeepAboveTabApps)
@@ -88,6 +92,7 @@ Config := {
     ; Theme colors (loaded by LoadThemeFromFile; dark.ini defaults)
     ThemeBackground: "1C1C2E",
     ThemeTabBarBg: "13132A",
+    ThemeTabBarShadow: "000000",   ; RGB for tab-bar edge gradient (alpha applied in DrawTabBar)
     ThemeTabActiveBg: "7B6CF6",
     ThemeTabActiveText: "FFFFFF",
     ThemeTabInactiveBg: "252540",
@@ -206,8 +211,12 @@ LoadConfigFromIni() {
         Config.ShowCloseButton := (Trim(StrSplit(IniRead(iniPath, "Layout", "ShowCloseButton", "1"), ";")[1]) = "1")
         Config.ShowPopoutButton := (Trim(StrSplit(IniRead(iniPath, "Layout", "ShowPopoutButton", "1"), ";")[1]) = "1")
         Config.TabPosition := IniRead(iniPath, "Layout", "TabPosition", "top")
+        Config.VerticalTabWidth := Integer(IniRead(iniPath, "Layout", "VerticalTabWidth", Config.VerticalTabWidth))
+        Config.TabTitleOrientVertical := IniBool(iniPath, "Layout", "TabTitleOrientVertical", false)
         Config.TabIndicatorHeight := Integer(IniRead(iniPath, "Layout", "TabIndicatorHeight", "3"))
         Config.TabCornerRadius := Integer(IniRead(iniPath, "Layout", "TabCornerRadius", "5"))
+        Config.ContentCornerRadius := Integer(IniRead(iniPath, "Layout", "ContentCornerRadius", Config.ContentCornerRadius))
+        Config.TabBarShadowHeight := Integer(IniRead(iniPath, "Layout", "TabBarShadowHeight", Config.TabBarShadowHeight))
         Config.TabSeparatorWidth := Integer(IniRead(iniPath, "Layout", "TabSeparatorWidth", "0"))
         Config.ActiveTabStyle := Trim(IniRead(iniPath, "Layout", "ActiveTabStyle", "full"))
     }
@@ -237,6 +246,23 @@ LoadConfigFromIni() {
         Config.TitleStripPatterns.Push(val)
         i++
     }
+    NormalizeTabPositionAndLayout()
+}
+
+; Clamps TabPosition and layout numbers after config/theme load.
+NormalizeTabPositionAndLayout() {
+    pos := StrLower(Trim(Config.TabPosition))
+    if !(pos = "top" || pos = "bottom" || pos = "left" || pos = "right")
+        pos := "top"
+    Config.TabPosition := pos
+    Config.VerticalTabWidth := Max(80, Config.VerticalTabWidth)
+    Config.ContentCornerRadius := Max(0, Config.ContentCornerRadius)
+    Config.TabBarShadowHeight := Max(0, Config.TabBarShadowHeight)
+}
+
+; True when the tab strip is docked to the left or right edge.
+IsVertical() {
+    return Config.TabPosition = "left" || Config.TabPosition = "right"
 }
 
 ; Loads theme colors and layout overrides from an .ini file; falls back to dark.ini if missing.
@@ -277,14 +303,33 @@ LoadThemeFromFile(themePath) {
     Config.TabBarAlignment := (rawAlign != "") ? Trim(rawAlign) : IniRead(Config.ConfigPath, "Layout", "TabBarAlignment", "center")
     Config.TabIndicatorHeight := Integer(IniRead(themePath, "Layout", "TabIndicatorHeight", String(Config.TabIndicatorHeight)))
     Config.TabCornerRadius := Integer(IniRead(themePath, "Layout", "TabCornerRadius", String(Config.TabCornerRadius)))
+    Config.ContentCornerRadius := Integer(IniRead(themePath, "Layout", "ContentCornerRadius", String(Config.ContentCornerRadius)))
+    Config.TabBarShadowHeight := Integer(IniRead(themePath, "Layout", "TabBarShadowHeight", String(Config.TabBarShadowHeight)))
     Config.TabSeparatorWidth := Integer(IniRead(themePath, "Layout", "TabSeparatorWidth", String(Config.TabSeparatorWidth)))
     Config.ThemeTabSeparatorColor := IniRead(themePath, "Theme", "TabSeparatorColor", "")
+    Config.ThemeTabBarShadow := IniRead(themePath, "Theme", "TabBarShadow", Config.ThemeTabBarShadow)
     ; TabPosition: when theme doesn't specify, read from config (not Config.TabPosition) so we don't carry over
     ; the previous theme's value when switching themes
     rawPos := IniRead(themePath, "Layout", "TabPosition", "")
     Config.TabPosition := (rawPos != "") ? Trim(rawPos) : IniRead(Config.ConfigPath, "Layout", "TabPosition", "top")
     rawStyle := IniRead(themePath, "Layout", "ActiveTabStyle", "")
     Config.ActiveTabStyle := (rawStyle != "") ? Trim(rawStyle) : "full"
+    rawVtw := IniRead(themePath, "Layout", "VerticalTabWidth", "")
+    if rawVtw != "" {
+        parts := StrSplit(rawVtw, ";")
+        if parts.Length
+            Config.VerticalTabWidth := Integer(Trim(parts[1]))
+    }
+    rawTov := IniRead(themePath, "Layout", "TabTitleOrientVertical", "")
+    if rawTov != "" {
+        parts := StrSplit(rawTov, ";")
+        if parts.Length
+            Config.TabTitleOrientVertical := (Trim(parts[1]) = "1")
+    } else {
+        cfgVal := IniRead(Config.ConfigPath, "Layout", "TabTitleOrientVertical", "0")
+        parts := StrSplit(cfgVal, ";")
+        Config.TabTitleOrientVertical := (parts.Length && Trim(parts[1]) = "1")
+    }
     rawTabMaxLines := IniRead(themePath, "Layout", "TabMaxLines", "")
     if rawTabMaxLines != "" {
         parts := StrSplit(rawTabMaxLines, ";")
@@ -339,6 +384,7 @@ LoadThemeFromFile(themePath) {
         parts := StrSplit(cfgVal, ";")
         Config.ShowPopoutButton := (parts.Length && Trim(parts[1]) = "1")
     }
+    NormalizeTabPositionAndLayout()
 }
 
 
@@ -1165,6 +1211,13 @@ BuildHostInstance(isPopout := false) {
     host.tabScrollOffset := 0   ; index of first visible tab (0-based)
     host.tabScrollMax := 0      ; updated by DrawTabBar
     host.isResizing := false
+    host.dragTabId := ""
+    host.dragStartX := 0
+    host.dragStartY := 0
+    host.dragCurrentX := 0
+    host.dragCurrentY := 0
+    host.dragThreshold := 6
+    host.dragMoved := false
 
     title := isPopout ? (Config.HostTitle " (popped out)") : Config.HostTitle
     ; +0x02000000 = WS_CLIPCHILDREN. Without it, the host's WM_ERASEBKGND paints the
@@ -1182,15 +1235,27 @@ BuildHostInstance(isPopout := false) {
     host.gui.OnEvent("Close", HostGuiClosed.Bind(host))
     host.gui.OnEvent("Size", HostGuiResized.Bind(host))
 
-    tabBarH := Config.HeaderHeight
-    tabBarY := (Config.TabPosition = "bottom") ? Config.HostHeight - tabBarH : 0
-    host.tabBarBg := host.gui.Add("Text", "x0 y0 w" Config.HostWidth " h" tabBarH " Background" Config.ThemeTabBarBg, "")
-    host.tabCanvas := host.gui.Add("Pic",
-        "x0 y" tabBarY " w" Config.HostWidth " h" tabBarH " +0xE", "")
+    if IsVertical() {
+        vW := Config.VerticalTabWidth
+        tabBarX := (Config.TabPosition = "right") ? (Config.HostWidth - vW) : 0
+        host.tabBarBg := host.gui.Add("Text", "x" tabBarX " y0 w" vW " h" Config.HostHeight " Background" Config.ThemeTabBarBg, "")
+        host.tabCanvas := host.gui.Add("Pic",
+            "x" tabBarX " y0 w" vW " h" Config.HostHeight " +0xE", "")
+    } else {
+        tabBarH := Config.HeaderHeight
+        tabBarY := (Config.TabPosition = "bottom") ? Config.HostHeight - tabBarH : 0
+        host.tabBarBg := host.gui.Add("Text", "x0 y" tabBarY " w" Config.HostWidth " h" tabBarH " Background" Config.ThemeTabBarBg, "")
+        host.tabCanvas := host.gui.Add("Pic",
+            "x0 y" tabBarY " w" Config.HostWidth " h" tabBarH " +0xE", "")
+    }
     host.contentBorderTop := host.gui.Add("Text", "Hidden x0 y0 w0 h1 Background" Config.ThemeContentBorder, "")
     host.contentBorderBottom := host.gui.Add("Text", "Hidden x0 y0 w0 h1 Background" Config.ThemeContentBorder, "")
     host.contentBorderLeft := host.gui.Add("Text", "Hidden x0 y0 w1 h0 Background" Config.ThemeContentBorder, "")
     host.contentBorderRight := host.gui.Add("Text", "Hidden x0 y0 w1 h0 Background" Config.ThemeContentBorder, "")
+    ; WS_EX_TRANSPARENT (+E0x20): click-through overlay masking square embedded corners (owner-drawn).
+    host.contentMaskCanvas := host.gui.Add("Pic", "Hidden x0 y0 w10 h10 +0xE +E0x20", "")
+    host.tabHoverAlpha := Map()
+    host.tabHoverTimer := 0
     host.hwnd := host.gui.Hwnd
     host.clientHwnd := host.hwnd
     State.HostByHwnd[host.hwnd ""] := host
@@ -1264,6 +1329,10 @@ HostGuiClosed(host, *) {
         if host.HasProp("tabBarHBitmap") && host.tabBarHBitmap {
             DllCall("DeleteObject", "UPtr", host.tabBarHBitmap)
             host.tabBarHBitmap := 0
+        }
+        if host.HasProp("contentMaskHBitmap") && host.contentMaskHBitmap {
+            DllCall("DeleteObject", "UPtr", host.contentMaskHBitmap)
+            host.contentMaskHBitmap := 0
         }
         host.gui.Destroy()
     } else {
@@ -2434,12 +2503,21 @@ LayoutTabButtons(host, windowWidth := 0, windowHeight := 0) {
     h := windowHeight > 0 ? windowHeight : GetClientHeight(host.hwnd)
     if !w || !h
         return
-    tabBarH := Config.HeaderHeight
-    tabBarY := (Config.TabPosition = "bottom") ? h - tabBarH : 0
-    if host.HasProp("tabBarBg") && host.tabBarBg
-        host.tabBarBg.Move(0, tabBarY, w, tabBarH)
-    if host.HasProp("tabCanvas") && host.tabCanvas
-        host.tabCanvas.Move(0, tabBarY, w, tabBarH)
+    if IsVertical() {
+        vW := Config.VerticalTabWidth
+        tabBarX := (Config.TabPosition = "right") ? (w - vW) : 0
+        if host.HasProp("tabBarBg") && host.tabBarBg
+            host.tabBarBg.Move(tabBarX, 0, vW, h)
+        if host.HasProp("tabCanvas") && host.tabCanvas
+            host.tabCanvas.Move(tabBarX, 0, vW, h)
+    } else {
+        tabBarH := Config.HeaderHeight
+        tabBarY := (Config.TabPosition = "bottom") ? h - tabBarH : 0
+        if host.HasProp("tabBarBg") && host.tabBarBg
+            host.tabBarBg.Move(0, tabBarY, w, tabBarH)
+        if host.HasProp("tabCanvas") && host.tabCanvas
+            host.tabCanvas.Move(0, tabBarY, w, tabBarH)
+    }
     DrawTabBar(host)
 }
 
@@ -2644,6 +2722,8 @@ ShowOnlyActiveTab(host, scheduleDeferred := true) {
     }
 
     if host.activeTabId = "" {
+        if host.HasProp("contentMaskCanvas") && host.contentMaskCanvas
+            host.contentMaskCanvas.Visible := false
         DrawTabBar(host)
         return
     }
@@ -2685,8 +2765,11 @@ ShowOnlyActiveTab(host, scheduleDeferred := true) {
         DllCall("RedrawWindow", "ptr", record.contentHwnd, "ptr", 0, "ptr", 0
             , "uint", 0x0001 | 0x0004 | 0x0080)  ; INVALIDATE|ERASE|ALLCHILDREN
         activeHwnd := record.contentHwnd
+        DrawContentMask(host, areaX, areaY, areaW, areaH, record.contentHwnd)
         break
     }
+    if !activeHwnd && host.HasProp("contentMaskCanvas") && host.contentMaskCanvas
+        host.contentMaskCanvas.Visible := false
     ; Now hide all inactive tabs
     for tabId in host.tabOrder {
         if !host.tabRecords.Has(tabId)
@@ -2718,14 +2801,21 @@ DrawTabBar(host) {
         return
     if !host.hwnd || !IsWindowExists(host.hwnd)
         return
+    if !host.HasProp("tabHoverAlpha") || !IsObject(host.tabHoverAlpha)
+        host.tabHoverAlpha := Map()
 
     w := GetClientWidth(host.hwnd)
     h := GetClientHeight(host.hwnd)
     if !w || !h
         return
 
-    tabBarW := w
-    tabBarH := Config.HeaderHeight
+    if IsVertical() {
+        tabBarW := Config.VerticalTabWidth
+        tabBarH := h
+    } else {
+        tabBarW := w
+        tabBarH := Config.HeaderHeight
+    }
 
     GdipCreateOffscreenBitmap(tabBarW, tabBarH, &pBitmap, &pGraphics)
     if !pBitmap || !pGraphics {
@@ -2746,6 +2836,200 @@ DrawTabBar(host) {
 
     tabCount := host.tabOrder.Length
     if tabCount = 0 {
+        DrawTabBarEdgeShadow(pGraphics, tabBarW, tabBarH)
+        ApplyBitmapToCanvas(host, pBitmap, pGraphics)
+        return
+    }
+
+    if IsVertical() {
+        arrowSz := 24
+        padding := Config.HostPadding
+        usableH := Max(120, tabBarH - padding * 2)
+        tabH := Config.TabHeight
+        gap := Config.TabGap
+        totalTabStackH := tabCount * tabH + (tabCount - 1) * gap
+        needScrollV := totalTabStackH > usableH
+        effectivePopoutW := Config.ShowPopoutButton ? Config.PopoutButtonWidth : 0
+        effectiveCloseW  := Config.ShowCloseButton  ? Config.CloseButtonWidth  : 0
+        buttonsTotalW := effectivePopoutW + effectiveCloseW
+        iconRowH := (buttonsTotalW > 0)
+            ? Min(Max(tabH - 4, 8), Max(18, effectivePopoutW, effectiveCloseW, 1)) : 0
+        titleH := tabH - iconRowH
+
+        if needScrollV {
+            innerH := usableH - arrowSz * 2
+            visibleCountV := Max(1, Floor((innerH + gap) / (tabH + gap)))
+            host.tabScrollMax := Max(0, tabCount - visibleCountV)
+            host.tabScrollOffset := Max(0, Min(host.tabScrollOffset, host.tabScrollMax))
+            drawStartV := host.tabScrollOffset + 1
+            drawEndV := Min(tabCount, host.tabScrollOffset + visibleCountV)
+            listTop := padding + arrowSz
+        } else {
+            host.tabScrollMax := 0
+            host.tabScrollOffset := 0
+            drawStartV := 1
+            drawEndV := tabCount
+            listTop := padding
+        }
+
+        x0 := padding
+        tabInnerW := tabBarW - 2 * padding
+
+        alignHValV := (Config.TabTitleAlignH = "left") ? 0 : (Config.TabTitleAlignH = "right") ? 2 : 1
+        alignVValV := (Config.TabTitleAlignV = "top") ? 0 : (Config.TabTitleAlignV = "bottom") ? 2 : 1
+        noWrapValV := (Config.TabMaxLines = 1)
+        if !noWrapValV
+            alignVValV := 0
+
+        pBrushActiveV := 0, pBrushInactiveV := 0, pBrushHoverV := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(Config.ThemeTabActiveBg), "UPtr*", &pBrushActiveV)
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(Config.ThemeTabInactiveBg), "UPtr*", &pBrushInactiveV)
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(Config.ThemeTabInactiveBgHover), "UPtr*", &pBrushHoverV)
+
+        inactiveTopV := ARGBWithAlpha(0x66, Config.ThemeContentBorder)
+        for i, tabId in host.tabOrder {
+            if needScrollV && (i < drawStartV || i > drawEndV)
+                continue
+            ty := listTop + (i - drawStartV) * (tabH + gap)
+            isActive  := (tabId = host.activeTabId)
+            tmpBrV := 0
+            if isActive
+                pDrawV := pBrushActiveV
+            else {
+                ha := host.tabHoverAlpha.Has(tabId) ? host.tabHoverAlpha[tabId] : 0
+                if ha >= 255
+                    pDrawV := pBrushHoverV
+                else if ha <= 0
+                    pDrawV := pBrushInactiveV
+                else {
+                    DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(BlendARGB(Config.ThemeTabInactiveBg, Config.ThemeTabInactiveBgHover, ha)), "UPtr*", &tmpBrV)
+                    pDrawV := tmpBrV
+                }
+            }
+            fgColorV := isActive ? HexToARGB(Config.ThemeTabActiveText) : HexToARGB(Config.ThemeTabInactiveText)
+            iconColorV := isActive ? HexToARGB(Config.ThemeTabActiveText) : HexToARGB(Config.ThemeIconColor)
+
+            if host.dragTabId = tabId {
+                pDragBrV := 0
+                DllCall("gdiplus\GdipCreateSolidFill", "UInt", ARGBWithAlpha(0xD9, Config.ThemeTabActiveBg), "UPtr*", &pDragBrV)
+                GdipFillRoundRectWithBrush(pGraphics, x0, ty, tabInnerW, tabH, Config.TabCornerRadius, pDragBrV, HexToARGB(Config.ThemeTabBarBg))
+                DllCall("gdiplus\GdipDeleteBrush", "UPtr", pDragBrV)
+                if tmpBrV
+                    DllCall("gdiplus\GdipDeleteBrush", "UPtr", tmpBrV)
+            } else {
+                GdipFillRoundRectWithBrush(pGraphics, x0, ty, tabInnerW, tabH, Config.TabCornerRadius, pDrawV, HexToARGB(Config.ThemeTabBarBg))
+                if tmpBrV
+                    DllCall("gdiplus\GdipDeleteBrush", "UPtr", tmpBrV)
+            }
+
+            if !isActive {
+                pBrTop := 0
+                DllCall("gdiplus\GdipCreateSolidFill", "UInt", inactiveTopV, "UPtr*", &pBrTop)
+                if pBrTop {
+                    DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pBrTop,
+                        "Int", x0, "Int", ty, "Int", tabInnerW, "Int", 1)
+                    DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrTop)
+                }
+            }
+
+            if isActive && Config.TabIndicatorHeight > 0 {
+                indicColorV := HexToARGB(Config.ThemeTabIndicatorColor != ""
+                    ? Config.ThemeTabIndicatorColor : Config.ThemeTabActiveBg)
+                indicR := (Config.TabIndicatorHeight >= 3) ? 1 : 0
+                ih := Max(1, tabH - 8)
+                if Config.TabPosition = "left" {
+                    ix := x0 + tabInnerW - Config.TabIndicatorHeight - 4
+                } else {
+                    ix := x0 + 4
+                }
+                if StrLower(Config.ActiveTabStyle) = "full" {
+                    ib := Config.ThemeTabIndicatorColor != "" ? Config.ThemeTabIndicatorColor : Config.ThemeTabActiveBg
+                    gw := Config.TabIndicatorHeight + 8
+                    gh := ih + 4
+                    gcx := ix + Config.TabIndicatorHeight // 2 - gw // 2
+                    gcy := (ty + 4) + ih // 2 - gh // 2
+                    GdipFillRoundRect(pGraphics, gcx, gcy, gw, gh, 2, ARGBWithAlpha(0x3C, ib))
+                }
+                GdipFillRoundRect(pGraphics, ix, ty + 4, Config.TabIndicatorHeight, ih, indicR, indicColorV)
+            }
+
+            rawTitleV := host.tabRecords.Has(tabId)
+                ? host.tabRecords[tabId].filteredTitle : "Window"
+            if Config.ShowTabNumbers
+                rawTitleV := i ". " rawTitleV
+
+            if Config.TabTitleOrientVertical && titleH > 4
+                GdipDrawStringSimpleRotated90(pGraphics, rawTitleV,
+                    x0, ty, tabInnerW, titleH,
+                    fgColorV, Config.ThemeFontNameTab, Config.ThemeFontSize, isActive,
+                    noWrapValV, true, alignHValV, alignVValV)
+            else
+                GdipDrawStringSimple(pGraphics, rawTitleV,
+                    x0, ty, tabInnerW, titleH,
+                    fgColorV, Config.ThemeFontNameTab, Config.ThemeFontSize, isActive,
+                    noWrapValV, true, alignHValV, alignVValV)
+
+            iconY := ty + titleH
+            iconBaseX := x0 + (tabInnerW - buttonsTotalW) // 2
+            if Config.ShowPopoutButton {
+                iconTextV := host.isPopout ? Config.IconMerge : Config.IconPopout
+                GdipDrawStringSimple(pGraphics, iconTextV,
+                    iconBaseX, iconY, effectivePopoutW, iconRowH,
+                    iconColorV, Config.ThemeIconFont, Config.ThemeIconFontSize, false)
+            }
+            if Config.ShowCloseButton {
+                GdipDrawStringSimple(pGraphics, Config.IconClose,
+                    iconBaseX + effectivePopoutW, iconY,
+                    effectiveCloseW, iconRowH,
+                    iconColorV, Config.ThemeIconFont, Config.ThemeIconFontSize, false)
+            }
+        }
+
+        if host.dragTabId != "" && host.dragMoved {
+            indicARGBv := HexToARGB(Config.ThemeTabIndicatorColor != "" ? Config.ThemeTabIndicatorColor : Config.ThemeTabActiveBg)
+            myIns := host.dragCurrentY ? host.dragCurrentY : host.dragStartY
+            insRow := GetDragInsertIndexVertical(host, myIns)
+            lineYv := listTop + (insRow - drawStartV) * (tabH + gap) - gap // 2
+            pInsBrushV := 0
+            DllCall("gdiplus\GdipCreateSolidFill", "UInt", indicARGBv, "UPtr*", &pInsBrushV)
+            if pInsBrushV {
+                DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pInsBrushV,
+                    "Int", x0, "Int", lineYv, "Int", tabInnerW, "Int", 2)
+                DllCall("gdiplus\GdipDeleteBrush", "UPtr", pInsBrushV)
+            }
+        }
+
+        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrushActiveV)
+        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrushInactiveV)
+        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrushHoverV)
+
+        if Config.TabSeparatorWidth > 0 {
+            sepColorV := Config.ThemeTabSeparatorColor != "" ? HexToARGB(Config.ThemeTabSeparatorColor) : HexToARGB(Config.ThemeContentBorder)
+            pSepBrushV := 0
+            DllCall("gdiplus\GdipCreateSolidFill", "UInt", sepColorV, "UPtr*", &pSepBrushV)
+            for i, tabId in host.tabOrder {
+                if needScrollV && (i < drawStartV || i > drawEndV)
+                    continue
+                if (needScrollV ? i < drawEndV : i < tabCount) {
+                    sepY := listTop + (i - drawStartV) * (tabH + gap) + tabH + gap // 2 - Config.TabSeparatorWidth // 2
+                    DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pSepBrushV,
+                        "Int", x0, "Int", sepY, "Int", tabInnerW, "Int", Config.TabSeparatorWidth)
+                }
+            }
+            DllCall("gdiplus\GdipDeleteBrush", "UPtr", pSepBrushV)
+        }
+
+        arrowX := (tabBarW - arrowSz) // 2
+        if needScrollV && host.tabScrollOffset > 0
+            GdipDrawStringSimple(pGraphics, Chr(0xE70E),
+                arrowX, padding, arrowSz, arrowSz,
+                HexToARGB(Config.ThemeTabActiveText), Config.ThemeIconFont, Config.ThemeIconFontSize, false)
+        if needScrollV && host.tabScrollOffset < host.tabScrollMax
+            GdipDrawStringSimple(pGraphics, Chr(0xE70D),
+                arrowX, tabBarH - padding - arrowSz, arrowSz, arrowSz,
+                HexToARGB(Config.ThemeTabActiveText), Config.ThemeIconFont, Config.ThemeIconFontSize, false)
+
+        DrawTabBarEdgeShadow(pGraphics, tabBarW, tabBarH)
         ApplyBitmapToCanvas(host, pBitmap, pGraphics)
         return
     }
@@ -2803,22 +3087,55 @@ DrawTabBar(host) {
     DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(Config.ThemeTabInactiveBg), "UPtr*", &pBrushInactive)
     DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(Config.ThemeTabInactiveBgHover), "UPtr*", &pBrushHover)
 
+    inactiveTopH := ARGBWithAlpha(0x66, Config.ThemeContentBorder)
     for i, tabId in host.tabOrder {
         if needScroll && (i < drawStart || i > drawEnd)
             continue
         isActive  := (tabId = host.activeTabId)
-        isHovered := (tabId = host.tabHoveredId)
-
-        pTabBgBrush := isActive ? pBrushActive : (isHovered ? pBrushHover : pBrushInactive)
+        tmpBr := 0
+        if isActive
+            pDraw := pBrushActive
+        else {
+            ha := host.tabHoverAlpha.Has(tabId) ? host.tabHoverAlpha[tabId] : 0
+            if ha >= 255
+                pDraw := pBrushHover
+            else if ha <= 0
+                pDraw := pBrushInactive
+            else {
+                DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(BlendARGB(Config.ThemeTabInactiveBg, Config.ThemeTabInactiveBgHover, ha)), "UPtr*", &tmpBr)
+                pDraw := tmpBr
+            }
+        }
         fgColor := isActive  ? HexToARGB(Config.ThemeTabActiveText)
                  :             HexToARGB(Config.ThemeTabInactiveText)
         iconColor := isActive ? HexToARGB(Config.ThemeTabActiveText)
                    :            HexToARGB(Config.ThemeIconColor)
 
         ; Tab background (rounded corners)
-        GdipFillRoundRectWithBrush(pGraphics, x, tabOffsetY, tabWidth, Config.TabHeight, Config.TabCornerRadius, pTabBgBrush, HexToARGB(Config.ThemeTabBarBg))
+        if host.dragTabId = tabId {
+            pDragBrH := 0
+            DllCall("gdiplus\GdipCreateSolidFill", "UInt", ARGBWithAlpha(0xD9, Config.ThemeTabActiveBg), "UPtr*", &pDragBrH)
+            GdipFillRoundRectWithBrush(pGraphics, x, tabOffsetY, tabWidth, Config.TabHeight, Config.TabCornerRadius, pDragBrH, HexToARGB(Config.ThemeTabBarBg))
+            DllCall("gdiplus\GdipDeleteBrush", "UPtr", pDragBrH)
+            if tmpBr
+                DllCall("gdiplus\GdipDeleteBrush", "UPtr", tmpBr)
+        } else {
+            GdipFillRoundRectWithBrush(pGraphics, x, tabOffsetY, tabWidth, Config.TabHeight, Config.TabCornerRadius, pDraw, HexToARGB(Config.ThemeTabBarBg))
+            if tmpBr
+                DllCall("gdiplus\GdipDeleteBrush", "UPtr", tmpBr)
+        }
 
-        ; Active indicator strip
+        if !isActive {
+            pBrTopH := 0
+            DllCall("gdiplus\GdipCreateSolidFill", "UInt", inactiveTopH, "UPtr*", &pBrTopH)
+            if pBrTopH {
+                DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pBrTopH,
+                    "Int", x, "Int", tabOffsetY, "Int", tabWidth, "Int", 1)
+                DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrTopH)
+            }
+        }
+
+        ; Active indicator strip (+ glow when ActiveTabStyle=full)
         if isActive && Config.TabIndicatorHeight > 0 {
             indicColor := HexToARGB(Config.ThemeTabIndicatorColor != ""
                 ? Config.ThemeTabIndicatorColor : Config.ThemeTabActiveBg)
@@ -2827,6 +3144,14 @@ DrawTabBar(host) {
                 : tabOffsetY + Config.TabHeight - Config.TabIndicatorHeight
             indicW := Max(1, tabWidth - 8)
             indicR := (Config.TabIndicatorHeight >= 3) ? 1 : 0
+            if StrLower(Config.ActiveTabStyle) = "full" {
+                ibh := Config.ThemeTabIndicatorColor != "" ? Config.ThemeTabIndicatorColor : Config.ThemeTabActiveBg
+                gwh := indicW + 8
+                ghh := Config.TabIndicatorHeight + 4
+                gcx := (x + 4) + indicW // 2 - gwh // 2
+                gcy := indicY + Config.TabIndicatorHeight // 2 - ghh // 2
+                GdipFillRoundRect(pGraphics, gcx, gcy, gwh, ghh, 2, ARGBWithAlpha(0x3C, ibh))
+            }
             GdipFillRoundRect(pGraphics, x + 4, indicY, indicW, Config.TabIndicatorHeight, indicR, indicColor)
         }
 
@@ -2857,6 +3182,22 @@ DrawTabBar(host) {
         }
 
         x += tabWidth + Config.TabGap
+    }
+
+    if host.dragTabId != "" && host.dragMoved {
+        indicARGBh := HexToARGB(Config.ThemeTabIndicatorColor != "" ? Config.ThemeTabIndicatorColor : Config.ThemeTabActiveBg)
+        mxIns := host.dragCurrentX ? host.dragCurrentX : host.dragStartX
+        insCol := GetDragInsertIndex(host, mxIns)
+        startXIns := needScroll ? Config.HostPadding + arrowW : Config.HostPadding
+        drawStartIns := needScroll ? host.tabScrollOffset + 1 : 1
+        lineXh := startXIns + (insCol - drawStartIns) * (tabWidth + Config.TabGap) - Config.TabGap // 2
+        pInsBrushH := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", indicARGBh, "UPtr*", &pInsBrushH)
+        if pInsBrushH {
+            DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pInsBrushH,
+                "Int", lineXh, "Int", tabOffsetY, "Int", 2, "Int", Config.TabHeight)
+            DllCall("gdiplus\GdipDeleteBrush", "UPtr", pInsBrushH)
+        }
     }
 
     DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrushActive)
@@ -2894,6 +3235,7 @@ DrawTabBar(host) {
             HexToARGB(Config.ThemeTabActiveText), Config.ThemeIconFont, Config.ThemeIconFontSize, false)
     }
 
+    DrawTabBarEdgeShadow(pGraphics, tabBarW, tabBarH)
     ApplyBitmapToCanvas(host, pBitmap, pGraphics)
 }
 
@@ -2925,6 +3267,24 @@ UpdateHostTitle(host) {
 GetEmbedRect(host, &x, &y, &w, &h) {
 
     padBottom := (Config.HostPaddingBottom >= 0) ? Config.HostPaddingBottom : Config.HostPadding
+    if IsVertical() {
+        x := (Config.TabPosition = "left") ? (Config.VerticalTabWidth + Config.HostPadding) : Config.HostPadding
+        y := Config.HostPadding
+        if host.hwnd && IsWindowExists(host.hwnd) {
+            try {
+                WinGetClientPos(,, &clientW, &clientH, "ahk_id " host.hwnd)
+                if clientW > 0 && clientH > 0 {
+                    w := Max(200, clientW - Config.VerticalTabWidth - (Config.HostPadding * 2))
+                    h := Max(140, clientH - Config.HostPadding - padBottom)
+                    return
+                }
+            }
+        }
+        w := Max(200, Config.HostWidth - Config.VerticalTabWidth - (Config.HostPadding * 2))
+        h := Max(140, Config.HostHeight - Config.HostPadding - padBottom)
+        return
+    }
+
     x := Config.HostPadding
 
     if Config.TabPosition = "bottom"
@@ -2991,6 +3351,10 @@ CleanupAll(*) {
         if host.HasProp("tabBarHBitmap") && host.tabBarHBitmap {
             DllCall("DeleteObject", "UPtr", host.tabBarHBitmap)
             host.tabBarHBitmap := 0
+        }
+        if host.HasProp("contentMaskHBitmap") && host.contentMaskHBitmap {
+            DllCall("DeleteObject", "UPtr", host.contentMaskHBitmap)
+            host.contentMaskHBitmap := 0
         }
     }
     ; Release cached GDI+ font objects
@@ -3897,7 +4261,55 @@ GetTabWidthForHost(host) {
     return tabWidth
 }
 
-GetTabIndexAtMouseX(host, mouseX) {
+VerticalTabIconRowH() {
+    effectivePopoutW := Config.ShowPopoutButton ? Config.PopoutButtonWidth : 0
+    effectiveCloseW  := Config.ShowCloseButton  ? Config.CloseButtonWidth  : 0
+    if effectivePopoutW + effectiveCloseW = 0
+        return 0
+    tabH := Config.TabHeight
+    return Min(Max(tabH - 4, 8), Max(18, effectivePopoutW, effectiveCloseW, 1))
+}
+
+; Tab-bar-local X/Y when the cursor is over the strip (canvas-relative for vertical; same as horizontal).
+TabBarClientToLocal(host, hwnd, mouseX, mouseY, &lx, &ly) {
+    if IsVertical() {
+        if hwnd = host.tabCanvas.Hwnd {
+            lx := mouseX
+            ly := mouseY
+            return
+        }
+        if hwnd = host.hwnd {
+            clientW := GetClientWidth(host.hwnd)
+            if Config.TabPosition = "left" {
+                lx := mouseX
+                ly := mouseY
+            } else {
+                lx := mouseX - (clientW - Config.VerticalTabWidth)
+                ly := mouseY
+            }
+            return
+        }
+    } else {
+        if hwnd = host.tabCanvas.Hwnd {
+            lx := mouseX
+            ly := mouseY
+            return
+        }
+        if hwnd = host.hwnd {
+            tabBarY := (Config.TabPosition = "bottom")
+                ? (GetClientHeight(host.hwnd) - Config.HeaderHeight) : 0
+            lx := mouseX
+            ly := mouseY - tabBarY
+            return
+        }
+    }
+    lx := mouseX
+    ly := mouseY
+}
+
+GetTabIndexAtMouse(host, mouseX, mouseY) {
+    if IsVertical()
+        return GetTabIndexAtMouseVertical(host, mouseX, mouseY)
     tabWidth := GetTabWidthForHost(host)
     if tabWidth = 0
         return 0
@@ -3917,7 +4329,47 @@ GetTabIndexAtMouseX(host, mouseX) {
     return 0
 }
 
-GetTabZoneAtMouseX(host, mouseX, tabIdx) {
+GetTabIndexAtMouseVertical(host, mouseX, mouseY) {
+    tabCount := host.tabOrder.Length
+    if tabCount = 0
+        return 0
+    padding := Config.HostPadding
+    tabBarH := GetClientHeight(host.tabCanvas.Hwnd)
+    usableH := Max(120, tabBarH - padding * 2)
+    tabH := Config.TabHeight
+    gap := Config.TabGap
+    totalTabStackH := tabCount * tabH + (tabCount - 1) * gap
+    needScroll := totalTabStackH > usableH
+    arrowSz := 24
+    if needScroll {
+        innerH := usableH - arrowSz * 2
+        visibleCount := Max(1, Floor((innerH + gap) / (tabH + gap)))
+        startIdx := host.tabScrollOffset + 1
+        listTop := padding + arrowSz
+    } else {
+        startIdx := 1
+        listTop := padding
+        visibleCount := tabCount
+    }
+    x0 := padding
+    tabInnerW := Config.VerticalTabWidth - 2 * padding
+    if mouseX < x0 || mouseX >= x0 + tabInnerW
+        return 0
+    drawEnd := Min(tabCount, startIdx + visibleCount - 1)
+    Loop tabCount {
+        i := A_Index
+        if needScroll && (i < startIdx || i > drawEnd)
+            continue
+        ty := listTop + (i - startIdx) * (tabH + gap)
+        if mouseY >= ty && mouseY < ty + tabH
+            return i
+    }
+    return 0
+}
+
+GetTabZoneAtMouse(host, mouseX, mouseY, tabIdx) {
+    if IsVertical()
+        return GetTabZoneAtMouseVertical(host, mouseX, mouseY, tabIdx)
     tabWidth := GetTabWidthForHost(host)
     arrowW := 24
     needScroll := host.HasProp("tabScrollMax") && host.tabScrollMax > 0
@@ -3929,9 +4381,151 @@ GetTabZoneAtMouseX(host, mouseX, tabIdx) {
     titleWidth := tabWidth - effectiveCloseW - effectivePopoutW
     if mouseX < slotX + titleWidth
         return "title"
-    if mouseX < slotX + titleWidth + Config.PopoutButtonWidth
+    if Config.ShowPopoutButton && mouseX < slotX + titleWidth + Config.PopoutButtonWidth
         return "popout"
     return "close"
+}
+
+GetTabZoneAtMouseVertical(host, mouseX, mouseY, tabIdx) {
+    tabCount := host.tabOrder.Length
+    if tabIdx < 1 || tabIdx > tabCount
+        return "title"
+    padding := Config.HostPadding
+    tabBarH := GetClientHeight(host.tabCanvas.Hwnd)
+    usableH := Max(120, tabBarH - padding * 2)
+    tabH := Config.TabHeight
+    gap := Config.TabGap
+    totalTabStackH := tabCount * tabH + (tabCount - 1) * gap
+    needScroll := totalTabStackH > usableH
+    arrowSz := 24
+    if needScroll {
+        innerH := usableH - arrowSz * 2
+        visibleCount := Max(1, Floor((innerH + gap) / (tabH + gap)))
+        startIdx := host.tabScrollOffset + 1
+        listTop := padding + arrowSz
+    } else {
+        startIdx := 1
+        listTop := padding
+        visibleCount := tabCount
+    }
+    drawEnd := Min(tabCount, startIdx + visibleCount - 1)
+    if tabIdx < startIdx || tabIdx > drawEnd
+        return "title"
+    ty := listTop + (tabIdx - startIdx) * (tabH + gap)
+    iconRowH := VerticalTabIconRowH()
+    titleH := tabH - iconRowH
+    relY := mouseY - ty
+    if relY < titleH || (!Config.ShowPopoutButton && !Config.ShowCloseButton)
+        return "title"
+    effectivePopoutW := Config.ShowPopoutButton ? Config.PopoutButtonWidth : 0
+    effectiveCloseW  := Config.ShowCloseButton  ? Config.CloseButtonWidth  : 0
+    buttonsTotalW := effectivePopoutW + effectiveCloseW
+    x0 := padding
+    tabInnerW := Config.VerticalTabWidth - 2 * padding
+    iconBaseX := x0 + (tabInnerW - buttonsTotalW) // 2
+    if Config.ShowPopoutButton && mouseX < iconBaseX + effectivePopoutW
+        return "popout"
+    if Config.ShowCloseButton
+        return "close"
+    return "title"
+}
+
+; Legacy horizontal-only hit test (1-based index). Delegates to GetTabIndexAtMouse with canvas-local Y.
+GetTabIndexAtMouseX(host, mouseX) {
+    if IsVertical()
+        return 0
+    midY := Config.HeaderHeight // 2
+    return GetTabIndexAtMouse(host, mouseX, midY)
+}
+
+GetTabZoneAtMouseX(host, mouseX, tabIdx) {
+    if IsVertical()
+        return "title"
+    midY := Config.HeaderHeight // 2
+    return GetTabZoneAtMouse(host, mouseX, midY, tabIdx)
+}
+
+; Closest tab slot (1-based) for horizontal drag-insert; geometry matches DrawTabBar scrolling.
+GetDragInsertIndex(host, mouseX) {
+    tabCount := host.tabOrder.Length
+    if tabCount = 0
+        return 0
+    tabWidth := GetTabWidthForHost(host)
+    if tabWidth = 0
+        return 0
+    tabBarW := GetClientWidth(host.hwnd)
+    usableWidth := Max(200, tabBarW - (Config.HostPadding * 2))
+    totalW := tabCount * tabWidth + (tabCount - 1) * Config.TabGap
+    needScroll := totalW > usableWidth
+    arrowW := 24
+    startX := needScroll ? Config.HostPadding + arrowW : Config.HostPadding
+    drawStart := needScroll ? host.tabScrollOffset + 1 : 1
+    bestIdx := 1
+    bestDist := 999999999
+    Loop tabCount {
+        i := A_Index
+        slotLeft := startX + (i - drawStart) * (tabWidth + Config.TabGap)
+        slotCenterX := slotLeft + tabWidth // 2
+        d := Abs(mouseX - slotCenterX)
+        if d < bestDist {
+            bestDist := d
+            bestIdx := i
+        }
+    }
+    return bestIdx
+}
+
+; Closest tab row (1-based) for vertical tab strip drag-insert.
+GetDragInsertIndexVertical(host, mouseY) {
+    tabCount := host.tabOrder.Length
+    if tabCount = 0
+        return 0
+    tabBarH := GetClientHeight(host.tabCanvas.Hwnd)
+    padding := Config.HostPadding
+    usableH := Max(120, tabBarH - padding * 2)
+    tabH := Config.TabHeight
+    gap := Config.TabGap
+    totalTabStackH := tabCount * tabH + (tabCount - 1) * gap
+    needScrollV := totalTabStackH > usableH
+    arrowSz := 24
+    if needScrollV {
+        innerH := usableH - arrowSz * 2
+        visibleCountV := Max(1, Floor((innerH + gap) / (tabH + gap)))
+        drawStartV := host.tabScrollOffset + 1
+        listTop := padding + arrowSz
+    } else {
+        drawStartV := 1
+        listTop := padding
+    }
+    bestIdx := 1
+    bestDist := 999999999
+    Loop tabCount {
+        i := A_Index
+        ty := listTop + (i - drawStartV) * (tabH + gap)
+        slotCenterY := ty + tabH // 2
+        d := Abs(mouseY - slotCenterY)
+        if d < bestDist {
+            bestDist := d
+            bestIdx := i
+        }
+    }
+    return bestIdx
+}
+
+ReorderTabByDrag(host, insertIdx) {
+    if host.dragTabId = "" || insertIdx < 1 || insertIdx > host.tabOrder.Length
+        return
+    currentIdx := 0
+    for i, tid in host.tabOrder {
+        if tid = host.dragTabId {
+            currentIdx := i
+            break
+        }
+    }
+    if !currentIdx || insertIdx = currentIdx
+        return
+    host.tabOrder.RemoveAt(currentIdx)
+    host.tabOrder.InsertAt(insertIdx, host.dragTabId)
 }
 
 ; Returns true if the cursor is over any host's tab bar (screen coords).
@@ -3948,6 +4542,15 @@ IsMouseOverAnyTabBar() {
         clientH := GetClientHeight(host.hwnd)
         if clientX < 0 || clientY < 0 || clientX >= clientW || clientY >= clientH
             continue
+        if IsVertical() {
+            vW := Config.VerticalTabWidth
+            if Config.TabPosition = "left" {
+                if clientX < vW
+                    return true
+            } else if clientX >= clientW - vW
+                return true
+            continue
+        }
         tabBarY := 0
         if Config.TabPosition = "bottom"
             tabBarY := clientH - Config.HeaderHeight
@@ -3957,25 +4560,85 @@ IsMouseOverAnyTabBar() {
     return false
 }
 
+TabHoverFadeTick(host, *) {
+    if !host || !host.hwnd || !IsWindowExists(host.hwnd) {
+        if host && host.HasProp("tabHoverTimer") && host.tabHoverTimer
+            SetTimer(host.tabHoverTimer, 0)
+        return
+    }
+    for tabId in host.tabOrder {
+        tgt := (tabId = host.tabHoveredId) ? 255 : 0
+        cur := host.tabHoverAlpha.Has(tabId) ? host.tabHoverAlpha[tabId] : 0
+        if cur < tgt
+            host.tabHoverAlpha[tabId] := Min(tgt, cur + 40)
+        else if cur > tgt
+            host.tabHoverAlpha[tabId] := Max(tgt, cur - 40)
+    }
+    DrawTabBar(host)
+    done := true
+    for tabId in host.tabOrder {
+        cur := host.tabHoverAlpha.Has(tabId) ? host.tabHoverAlpha[tabId] : 0
+        tgt := (tabId = host.tabHoveredId) ? 255 : 0
+        if cur != tgt {
+            done := false
+            break
+        }
+    }
+    if done && host.HasProp("tabHoverTimer") && host.tabHoverTimer
+        SetTimer(host.tabHoverTimer, 0)
+}
+
 OnTabCanvasMouseMove(wParam, lParam, msg, hwnd) {
     mouseX := lParam & 0xFFFF
     mouseY := (lParam >> 16) & 0xFFFF
     for host in GetAllHosts() {
         if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
-        tabBarY := 0
-        if Config.TabPosition = "bottom" {
-            clientH := GetClientHeight(host.hwnd)
-            tabBarY := clientH - Config.HeaderHeight
+        TabBarClientToLocal(host, hwnd, mouseX, mouseY, &lx, &ly)
+        if host.dragTabId != "" {
+            if IsVertical() {
+                if Abs(ly - host.dragStartY) > host.dragThreshold {
+                    host.dragMoved := true
+                    host.dragCurrentY := ly
+                    ReorderTabByDrag(host, GetDragInsertIndexVertical(host, ly))
+                }
+            } else {
+                if Abs(lx - host.dragStartX) > host.dragThreshold {
+                    host.dragMoved := true
+                    host.dragCurrentX := lx
+                    ReorderTabByDrag(host, GetDragInsertIndex(host, lx))
+                }
+            }
+            if host.dragMoved
+                DrawTabBar(host)
+            return
         }
-        checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
         newHoveredId := ""
-        if mouseY >= checkY && mouseY < checkY + Config.HeaderHeight {
-            tabIdx := GetTabIndexAtMouseX(host, mouseX)
+        if IsVertical() {
+            barH := GetClientHeight(host.tabCanvas.Hwnd)
+            if ly >= 0 && ly < barH && lx >= 0 && lx < Config.VerticalTabWidth
+                tabIdx := GetTabIndexAtMouse(host, lx, ly)
+            else
+                tabIdx := 0
+            newHoveredId := (tabIdx > 0) ? host.tabOrder[tabIdx] : ""
+        } else {
+            tabBarY := 0
+            if Config.TabPosition = "bottom" {
+                clientH := GetClientHeight(host.hwnd)
+                tabBarY := clientH - Config.HeaderHeight
+            }
+            checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
+            if mouseY >= checkY && mouseY < checkY + Config.HeaderHeight
+                tabIdx := GetTabIndexAtMouse(host, lx, ly)
+            else
+                tabIdx := 0
             newHoveredId := (tabIdx > 0) ? host.tabOrder[tabIdx] : ""
         }
         if newHoveredId != host.tabHoveredId {
             host.tabHoveredId := newHoveredId
+            if !host.tabHoverTimer
+                host.tabHoverTimer := TabHoverFadeTick.Bind(host)
+            SetTimer(host.tabHoverTimer, 16)
             DrawTabBar(host)
         }
         if newHoveredId != "" && host.tabRecords.Has(newHoveredId) {
@@ -4011,36 +4674,74 @@ OnTabCanvasClick(wParam, lParam, msg, hwnd) {
     for host in GetAllHosts() {
         if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
-        tabBarY := 0
-        if Config.TabPosition = "bottom" {
-            clientH := GetClientHeight(host.hwnd)
-            tabBarY := clientH - Config.HeaderHeight
-        }
-        ; When message is from tab canvas, coords are canvas-relative (tab bar origin = 0,0)
-        checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
-        if mouseY < checkY || mouseY >= checkY + Config.HeaderHeight
-            continue
-        ; Scroll arrows — only handle when arrow is visible (can scroll in that direction)
-        if host.tabScrollMax > 0 {
-            if host.tabScrollOffset > 0 && mouseX >= Config.HostPadding && mouseX < Config.HostPadding + arrowW {
-                host.tabScrollOffset := Max(0, host.tabScrollOffset - 1)
-                DrawTabBar(host)
-                return
+        TabBarClientToLocal(host, hwnd, mouseX, mouseY, &lx, &ly)
+        if IsVertical() {
+            barH := GetClientHeight(host.tabCanvas.Hwnd)
+            barW := Config.VerticalTabWidth
+            if ly < 0 || ly >= barH || lx < 0 || lx >= barW
+                continue
+            padding := Config.HostPadding
+            arrowSz := arrowW
+            if host.tabScrollMax > 0 {
+                if host.tabScrollOffset > 0 && ly >= padding && ly < padding + arrowSz {
+                    host.tabScrollOffset := Max(0, host.tabScrollOffset - 1)
+                    DrawTabBar(host)
+                    return
+                }
+                if host.tabScrollOffset < host.tabScrollMax && ly >= barH - padding - arrowSz && ly < barH - padding {
+                    host.tabScrollOffset := Min(host.tabScrollMax, host.tabScrollOffset + 1)
+                    DrawTabBar(host)
+                    return
+                }
             }
-            tabWidth := GetTabWidthForHost(host)
-            visibleCount := Max(1, Floor((GetClientWidth(host.hwnd) - (Config.HostPadding * 2) - arrowW * 2) / (tabWidth + Config.TabGap)))
-            rightArrowX := Config.HostPadding + arrowW + visibleCount * (tabWidth + Config.TabGap) - Config.TabGap
-            if host.tabScrollOffset < host.tabScrollMax && mouseX >= rightArrowX && mouseX < rightArrowX + arrowW {
-                host.tabScrollOffset := Min(host.tabScrollMax, host.tabScrollOffset + 1)
-                DrawTabBar(host)
+            tabIdx := GetTabIndexAtMouse(host, lx, ly)
+            if tabIdx = 0 || tabIdx > host.tabOrder.Length
                 return
+            tabId := host.tabOrder[tabIdx]
+            zone := GetTabZoneAtMouse(host, lx, ly, tabIdx)
+        } else {
+            tabBarY := 0
+            if Config.TabPosition = "bottom" {
+                clientH := GetClientHeight(host.hwnd)
+                tabBarY := clientH - Config.HeaderHeight
             }
+            ; When message is from tab canvas, coords are canvas-relative (tab bar origin = 0,0)
+            checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
+            if mouseY < checkY || mouseY >= checkY + Config.HeaderHeight
+                continue
+            ; Scroll arrows — only handle when arrow is visible (can scroll in that direction)
+            if host.tabScrollMax > 0 {
+                if host.tabScrollOffset > 0 && mouseX >= Config.HostPadding && mouseX < Config.HostPadding + arrowW {
+                    host.tabScrollOffset := Max(0, host.tabScrollOffset - 1)
+                    DrawTabBar(host)
+                    return
+                }
+                tabWidth := GetTabWidthForHost(host)
+                visibleCount := Max(1, Floor((GetClientWidth(host.hwnd) - (Config.HostPadding * 2) - arrowW * 2) / (tabWidth + Config.TabGap)))
+                rightArrowX := Config.HostPadding + arrowW + visibleCount * (tabWidth + Config.TabGap) - Config.TabGap
+                if host.tabScrollOffset < host.tabScrollMax && mouseX >= rightArrowX && mouseX < rightArrowX + arrowW {
+                    host.tabScrollOffset := Min(host.tabScrollMax, host.tabScrollOffset + 1)
+                    DrawTabBar(host)
+                    return
+                }
+            }
+            tabIdx := GetTabIndexAtMouse(host, lx, ly)
+            if tabIdx = 0 || tabIdx > host.tabOrder.Length
+                return
+            tabId := host.tabOrder[tabIdx]
+            zone := GetTabZoneAtMouse(host, lx, ly, tabIdx)
         }
-        tabIdx := GetTabIndexAtMouseX(host, mouseX)
-        if tabIdx = 0 || tabIdx > host.tabOrder.Length
+        if zone = "title" {
+            host.dragTabId := tabId
+            host.dragStartX := lx
+            host.dragStartY := ly
+            host.dragCurrentX := 0
+            host.dragCurrentY := 0
+            host.dragMoved := false
+            capHwnd := (host.HasProp("tabCanvas") && host.tabCanvas.Hwnd) ? host.tabCanvas.Hwnd : hwnd
+            DllCall("user32\SetCapture", "ptr", capHwnd)
             return
-        tabId := host.tabOrder[tabIdx]
-        zone := GetTabZoneAtMouseX(host, mouseX, tabIdx)
+        }
         if zone = "close"
             CloseTab(host, tabId)
         else if zone = "popout"
@@ -4054,21 +4755,65 @@ OnTabCanvasClick(wParam, lParam, msg, hwnd) {
     }
 }
 
+OnTabCanvasMouseUp(wParam, lParam, msg, hwnd) {
+    for host in GetAllHosts() {
+        if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
+            continue
+        if host.dragTabId = ""
+            continue
+        DllCall("user32\ReleaseCapture")
+        wasDragging := host.dragMoved
+        dragId := host.dragTabId
+        host.dragTabId := ""
+        host.dragCurrentX := 0
+        host.dragCurrentY := 0
+        host.dragMoved := false
+        if !wasDragging && dragId != ""
+            SelectTab(host, dragId)
+        DrawTabBar(host)
+        return
+    }
+}
+
+OnCaptureChanged(wParam, lParam, msg, hwnd) {
+    for host in GetAllHosts() {
+        if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
+            continue
+        if host.dragTabId = ""
+            continue
+        host.dragTabId := ""
+        host.dragCurrentX := 0
+        host.dragCurrentY := 0
+        host.dragMoved := false
+        DrawTabBar(host)
+        return
+    }
+}
+
 OnTabCanvasMidClick(wParam, lParam, msg, hwnd) {
     mouseX := lParam & 0xFFFF
     mouseY := (lParam >> 16) & 0xFFFF
     for host in GetAllHosts() {
         if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
-        tabBarY := 0
-        if Config.TabPosition = "bottom" {
-            clientH := GetClientHeight(host.hwnd)
-            tabBarY := clientH - Config.HeaderHeight
+        TabBarClientToLocal(host, hwnd, mouseX, mouseY, &lx, &ly)
+        if IsVertical() {
+            barH := GetClientHeight(host.tabCanvas.Hwnd)
+            barW := Config.VerticalTabWidth
+            if ly < 0 || ly >= barH || lx < 0 || lx >= barW
+                return
+            tabIdx := GetTabIndexAtMouse(host, lx, ly)
+        } else {
+            tabBarY := 0
+            if Config.TabPosition = "bottom" {
+                clientH := GetClientHeight(host.hwnd)
+                tabBarY := clientH - Config.HeaderHeight
+            }
+            checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
+            if mouseY < checkY || mouseY >= checkY + Config.HeaderHeight
+                return
+            tabIdx := GetTabIndexAtMouse(host, lx, ly)
         }
-        checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
-        if mouseY < checkY || mouseY >= checkY + Config.HeaderHeight
-            return
-        tabIdx := GetTabIndexAtMouseX(host, mouseX)
         if tabIdx > 0 && tabIdx <= host.tabOrder.Length
             CloseTab(host, host.tabOrder[tabIdx])
         return
@@ -4081,15 +4826,24 @@ OnTabCanvasRightClick(wParam, lParam, msg, hwnd) {
     for host in GetAllHosts() {
         if host.hwnd != hwnd && (!host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd)
             continue
-        tabBarY := 0
-        if Config.TabPosition = "bottom" {
-            clientH := GetClientHeight(host.hwnd)
-            tabBarY := clientH - Config.HeaderHeight
+        TabBarClientToLocal(host, hwnd, mouseX, mouseY, &lx, &ly)
+        if IsVertical() {
+            barH := GetClientHeight(host.tabCanvas.Hwnd)
+            barW := Config.VerticalTabWidth
+            if ly < 0 || ly >= barH || lx < 0 || lx >= barW
+                return
+            tabIdx := GetTabIndexAtMouse(host, lx, ly)
+        } else {
+            tabBarY := 0
+            if Config.TabPosition = "bottom" {
+                clientH := GetClientHeight(host.hwnd)
+                tabBarY := clientH - Config.HeaderHeight
+            }
+            checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
+            if mouseY < checkY || mouseY >= checkY + Config.HeaderHeight
+                return
+            tabIdx := GetTabIndexAtMouse(host, lx, ly)
         }
-        checkY := (hwnd = host.tabCanvas.Hwnd) ? 0 : tabBarY
-        if mouseY < checkY || mouseY >= checkY + Config.HeaderHeight
-            return
-        tabIdx := GetTabIndexAtMouseX(host, mouseX)
         if tabIdx = 0 || tabIdx > host.tabOrder.Length
             return
         tabId := host.tabOrder[tabIdx]
@@ -4116,6 +4870,8 @@ OnMessage(0x0006, OnWmActivate)   ; WM_ACTIVATE: re-focus embedded content when 
 OnMessage(0x000F, OnTabCanvasPaint)   ; WM_PAINT: BitBlt stored bitmap to canvas DC on every repaint
 OnMessage(0x0200, OnTabCanvasMouseMove)
 OnMessage(0x0201, OnTabCanvasClick)
+OnMessage(0x0202, OnTabCanvasMouseUp)
+OnMessage(0x0215, OnCaptureChanged)
 OnMessage(0x0204, OnTabCanvasRightClick)
 OnMessage(0x0207, OnTabCanvasMidClick)
 
@@ -4134,6 +4890,22 @@ GdiplusStartup() {
 
 HexToARGB(hex) {
     return Integer("0xFF" . hex)
+}
+
+; 6-char RRGGBB plus separate alpha byte (AARRGGBB for GDI+).
+ARGBWithAlpha(alphaByte, rrggbbHex) {
+    return Integer("0x" Format("{:02X}", alphaByte) rrggbbHex)
+}
+
+; Linear blend of two RRGGBB hex strings; alpha 0 = all hex1, 255 = all hex2.
+BlendARGB(hex1, hex2, alpha) {
+    r1 := Integer("0x" SubStr(hex1, 1, 2)), g1 := Integer("0x" SubStr(hex1, 3, 2)), b1 := Integer("0x" SubStr(hex1, 5, 2))
+    r2 := Integer("0x" SubStr(hex2, 1, 2)), g2 := Integer("0x" SubStr(hex2, 3, 2)), b2 := Integer("0x" SubStr(hex2, 5, 2))
+    t := alpha / 255.0
+    return Format("{:02X}{:02X}{:02X}"
+        , Round(r1 + (r2 - r1) * t)
+        , Round(g1 + (g2 - g1) * t)
+        , Round(b1 + (b2 - b1) * t))
 }
 
 GdipCreateOffscreenBitmap(w, h, &pBitmap, &pGraphics) {
@@ -4157,6 +4929,141 @@ GdipBitmapToHBITMAP(pBitmap) {
     DllCall("gdiplus\GdipCreateHBITMAPFromBitmap",
         "UPtr", pBitmap, "UPtr*", &hBmp, "UInt", 0)
     return hBmp
+}
+
+; Closed rounded-rectangle path (same geometry as GdipFillRoundRect). Caller deletes path.
+GdipCreateRoundRectPath(x, y, w, h, radius, &pPath) {
+    pPath := 0
+    DllCall("gdiplus\GdipCreatePath", "Int", 0, "UPtr*", &pPath)
+    if !pPath
+        return
+    if radius <= 0 {
+        DllCall("gdiplus\GdipAddPathRectangleI", "UPtr", pPath,
+            "Int", x, "Int", y, "Int", w, "Int", h)
+        return
+    }
+    DllCall("gdiplus\GdipAddPathArcI", "UPtr", pPath,
+        "Int", x, "Int", y, "Int", radius * 2, "Int", radius * 2,
+        "Float", 180.0, "Float", 90.0)
+    DllCall("gdiplus\GdipAddPathArcI", "UPtr", pPath,
+        "Int", x + w - (radius * 2), "Int", y, "Int", radius * 2, "Int", radius * 2,
+        "Float", 270.0, "Float", 90.0)
+    DllCall("gdiplus\GdipAddPathArcI", "UPtr", pPath,
+        "Int", x + w - (radius * 2), "Int", y + h - (radius * 2), "Int", radius * 2, "Int", radius * 2,
+        "Float", 0.0, "Float", 90.0)
+    DllCall("gdiplus\GdipAddPathArcI", "UPtr", pPath,
+        "Int", x, "Int", y + h - (radius * 2), "Int", radius * 2, "Int", radius * 2,
+        "Float", 90.0, "Float", 90.0)
+    DllCall("gdiplus\GdipClosePathFigure", "UPtr", pPath)
+}
+
+; Gradient depth strip at the tab bar edge that meets the content area.
+DrawTabBarEdgeShadow(pGraphics, bw, bh) {
+    sh := Config.TabBarShadowHeight
+    if sh <= 0 || bw < 1 || bh < 1
+        return
+    sh := IsVertical() ? Min(sh, bw) : Min(sh, bh)
+    c0 := ARGBWithAlpha(0x50, Config.ThemeTabBarShadow)
+    c1 := 0x00000000
+    wrap := 4  ; WrapModeClamp
+    pBrush := 0
+    if IsVertical() {
+        if Config.TabPosition = "left" {
+            x0 := bw - sh
+            pt1 := Buffer(16, 0), pt2 := Buffer(16, 0)
+            NumPut("Float", Float(x0), pt1, 0), NumPut("Float", 0.0, pt1, 8)
+            NumPut("Float", Float(bw), pt2, 0), NumPut("Float", 0.0, pt2, 8)
+            DllCall("gdiplus\GdipCreateLineBrush", "Ptr", pt1, "Ptr", pt2, "UInt", c0, "UInt", c1, "Int", wrap, "UPtr*", &pBrush)
+            if pBrush
+                DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pBrush, "Int", x0, "Int", 0, "Int", sh, "Int", bh)
+        } else {
+            pt1 := Buffer(16, 0), pt2 := Buffer(16, 0)
+            NumPut("Float", Float(sh), pt1, 0), NumPut("Float", 0.0, pt1, 8)
+            NumPut("Float", 0.0, pt2, 0), NumPut("Float", 0.0, pt2, 8)
+            DllCall("gdiplus\GdipCreateLineBrush", "Ptr", pt1, "Ptr", pt2, "UInt", c0, "UInt", c1, "Int", wrap, "UPtr*", &pBrush)
+            if pBrush
+                DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pBrush, "Int", 0, "Int", 0, "Int", sh, "Int", bh)
+        }
+    } else if Config.TabPosition = "bottom" {
+        pt1 := Buffer(16, 0), pt2 := Buffer(16, 0)
+        NumPut("Float", 0.0, pt1, 0), NumPut("Float", 0.0, pt1, 8)
+        NumPut("Float", 0.0, pt2, 0), NumPut("Float", Float(sh), pt2, 8)
+        DllCall("gdiplus\GdipCreateLineBrush", "Ptr", pt1, "Ptr", pt2, "UInt", c0, "UInt", c1, "Int", wrap, "UPtr*", &pBrush)
+        if pBrush
+            DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pBrush, "Int", 0, "Int", 0, "Int", bw, "Int", sh)
+    } else {
+        y0 := bh - sh
+        pt1 := Buffer(16, 0), pt2 := Buffer(16, 0)
+        NumPut("Float", 0.0, pt1, 0), NumPut("Float", Float(y0), pt1, 8)
+        NumPut("Float", 0.0, pt2, 0), NumPut("Float", Float(bh), pt2, 8)
+        DllCall("gdiplus\GdipCreateLineBrush", "Ptr", pt1, "Ptr", pt2, "UInt", c0, "UInt", c1, "Int", wrap, "UPtr*", &pBrush)
+        if pBrush
+            DllCall("gdiplus\GdipFillRectangleI", "UPtr", pGraphics, "UPtr", pBrush, "Int", 0, "Int", y0, "Int", bw, "Int", sh)
+    }
+    if pBrush
+        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
+}
+
+DrawContentMask(host, cx, cy, cw, ch, contentHwnd) {
+    if !host.HasProp("contentMaskCanvas") || !host.contentMaskCanvas
+        return
+    mask := host.contentMaskCanvas
+    rad := Config.ContentCornerRadius
+    if rad <= 0 || cw < 4 || ch < 4 || !contentHwnd || !IsWindowExists(contentHwnd) {
+        mask.Visible := false
+        return
+    }
+    r := Min(rad, cw // 2, ch // 2)
+    GdipCreateOffscreenBitmap(cw, ch, &pBitmap, &pGraphics)
+    if !pBitmap || !pGraphics {
+        if pGraphics
+            DllCall("gdiplus\GdipDeleteGraphics", "UPtr", pGraphics)
+        if pBitmap
+            DllCall("gdiplus\GdipDisposeImage", "UPtr", pBitmap)
+        return
+    }
+    DllCall("gdiplus\GdipGraphicsClear", "UPtr", pGraphics, "UInt", 0)
+    rectF := Buffer(16, 0)
+    NumPut("Float", 0.0, rectF, 0)
+    NumPut("Float", 0.0, rectF, 4)
+    NumPut("Float", Float(cw), rectF, 8)
+    NumPut("Float", Float(ch), rectF, 12)
+    regOuter := 0
+    stat := DllCall("gdiplus\GdipCreateRegionRect", "Ptr", rectF, "UPtr*", &regOuter)
+    if stat != 0 || !regOuter {
+        GdipCleanupBitmap(pBitmap, pGraphics)
+        return
+    }
+    pPath := 0
+    GdipCreateRoundRectPath(0, 0, cw, ch, r, &pPath)
+    if !pPath {
+        DllCall("gdiplus\GdipDeleteRegion", "UPtr", regOuter)
+        GdipCleanupBitmap(pBitmap, pGraphics)
+        return
+    }
+    regInner := 0
+    DllCall("gdiplus\GdipCreateRegionPath", "UPtr", pPath, "UPtr*", &regInner)
+    DllCall("gdiplus\GdipDeletePath", "UPtr", pPath)
+    if !regInner {
+        DllCall("gdiplus\GdipDeleteRegion", "UPtr", regOuter)
+        GdipCleanupBitmap(pBitmap, pGraphics)
+        return
+    }
+    ; CombineModeExclude = 4 — outer rectangle minus rounded interior = corner caps only.
+    DllCall("gdiplus\GdipCombineRegionRegion", "UPtr", regOuter, "UPtr", regInner, "Int", 4)
+    DllCall("gdiplus\GdipDeleteRegion", "UPtr", regInner)
+    pFill := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "UInt", HexToARGB(Config.ThemeBackground), "UPtr*", &pFill)
+    if pFill {
+        DllCall("gdiplus\GdipFillRegion", "UPtr", pGraphics, "UPtr", regOuter, "UPtr", pFill)
+        DllCall("gdiplus\GdipDeleteBrush", "UPtr", pFill)
+    }
+    DllCall("gdiplus\GdipDeleteRegion", "UPtr", regOuter)
+    ApplyBitmapToContentMask(host, pBitmap, pGraphics)
+    mask.Move(cx, cy, cw, ch)
+    mask.Visible := true
+    flags := 0x0010 | 0x0001 | 0x0002  ; SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE
+    DllCall("SetWindowPos", "ptr", mask.Hwnd, "ptr", contentHwnd, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
 }
 
 GdipFillRoundRect(pGraphics, x, y, w, h, radius, argbColor) {
@@ -4290,6 +5197,19 @@ GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fon
     DllCall("gdiplus\GdipDeleteBrush", "UPtr", pBrush)
 }
 
+; Draw tab title rotated 90° (vertical reading). Uses world transform around rect center.
+GdipDrawStringSimpleRotated90(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fontSize, bold, noWrap := true, ellipsis := true, alignH := 1, alignV := 1) {
+    cx := Float(x) + Float(w) / 2.0
+    cy := Float(y) + Float(h) / 2.0
+    state := 0
+    DllCall("gdiplus\GdipSaveGraphics", "UPtr", pGraphics, "UPtr*", &state)
+    DllCall("gdiplus\GdipTranslateWorldTransform", "UPtr", pGraphics, "Float", cx, "Float", cy, "Int", 1)
+    DllCall("gdiplus\GdipRotateWorldTransform", "UPtr", pGraphics, "Float", 90.0, "Int", 1)
+    DllCall("gdiplus\GdipTranslateWorldTransform", "UPtr", pGraphics, "Float", -cx, "Float", -cy, "Int", 1)
+    GdipDrawStringSimple(pGraphics, text, x, y, w, h, argbColor, fontFamilyName, fontSize, bold, noWrap, ellipsis, alignH, alignV)
+    DllCall("gdiplus\GdipRestoreGraphics", "UPtr", pGraphics, "UPtr", state)
+}
+
 ; Stores the rendered HBITMAP on the host for OnTabCanvasPaint to BitBlt on every WM_PAINT.
 ; Converts the GDI+ bitmap to an HBITMAP and stores it on the host for OnTabCanvasPaint.
 ; More reliable than STM_SETIMAGE: the stored bitmap persists across any future WM_PAINT
@@ -4310,11 +5230,46 @@ ApplyBitmapToCanvas(host, pBitmap, pGraphics) {
         DllCall("InvalidateRect", "ptr", host.tabCanvas.Hwnd, "ptr", 0, "int", false)
 }
 
-; WM_PAINT handler for tab canvas controls.
-; BitBlts the stored HBITMAP directly to the canvas DC so the tab bar always shows
-; the correct content — even after being uncovered by another window.
-OnTabCanvasPaint(wParam, lParam, msg, hwnd) {
+ApplyBitmapToContentMask(host, pBitmap, pGraphics) {
+    hBmp := GdipBitmapToHBITMAP(pBitmap)
+    GdipCleanupBitmap(pBitmap, pGraphics)
+    if !hBmp
+        return
+    if host.HasProp("contentMaskHBitmap") && host.contentMaskHBitmap
+        DllCall("DeleteObject", "UPtr", host.contentMaskHBitmap)
+    host.contentMaskHBitmap := hBmp
+    if host.HasProp("contentMaskCanvas") && host.contentMaskCanvas
+        DllCall("InvalidateRect", "ptr", host.contentMaskCanvas.Hwnd, "ptr", 0, "int", false)
+}
+
+; WM_PAINT for tab bar Pic and content-corner mask Pic (alpha-aware mask uses AlphaBlend).
+OnHostChildPaint(wParam, lParam, msg, hwnd) {
     for host in GetAllHosts() {
+        if host.HasProp("contentMaskCanvas") && host.contentMaskCanvas.Hwnd = hwnd {
+            ps := Buffer(64, 0)
+            hdc := DllCall("BeginPaint", "ptr", hwnd, "ptr", ps, "ptr")
+            if hdc {
+                rc := Buffer(16, 0)
+                DllCall("GetClientRect", "ptr", hwnd, "ptr", rc)
+                bw := NumGet(rc, 8, "int")
+                bh := NumGet(rc, 12, "int")
+                if host.HasProp("contentMaskHBitmap") && host.contentMaskHBitmap {
+                    memDC := DllCall("CreateCompatibleDC", "ptr", hdc, "ptr")
+                    old := DllCall("SelectObject", "ptr", memDC, "ptr", host.contentMaskHBitmap, "ptr")
+                    bf := Buffer(4, 0)
+                    NumPut("UChar", 0, bf, 0)    ; BlendOp AC_SRC_OVER
+                    NumPut("UChar", 0, bf, 1)
+                    NumPut("UChar", 255, bf, 2) ; SourceConstantAlpha
+                    NumPut("UChar", 1, bf, 3)   ; AlphaFormat AC_SRC_ALPHA
+                    DllCall("msimg32\AlphaBlend", "ptr", hdc, "int", 0, "int", 0, "int", bw, "int", bh,
+                        "ptr", memDC, "int", 0, "int", 0, "int", bw, "int", bh, "uint", NumGet(bf, 0, "UInt"))
+                    DllCall("SelectObject", "ptr", memDC, "ptr", old)
+                    DllCall("DeleteDC", "ptr", memDC)
+                }
+            }
+            DllCall("EndPaint", "ptr", hwnd, "ptr", ps)
+            return 0
+        }
         if !host.HasProp("tabCanvas") || host.tabCanvas.Hwnd != hwnd
             continue
         ps := Buffer(64, 0)
@@ -4347,6 +5302,10 @@ OnTabCanvasPaint(wParam, lParam, msg, hwnd) {
     return ""  ; not our canvas — let Windows handle it
 }
 
+OnTabCanvasPaint(wParam, lParam, msg, hwnd) {
+    return OnHostChildPaint(wParam, lParam, msg, hwnd)
+}
+
 OnTabCanvasMouseWheel(wParam, lParam, msg, hwnd) {
     ; WM_MOUSEWHEEL goes to the focus window (usually embedded content), not the window under cursor.
     ; Use cursor position (screen coords in lParam) and check if it's over any host's tab bar.
@@ -4360,13 +5319,24 @@ OnTabCanvasMouseWheel(wParam, lParam, msg, hwnd) {
         DllCall("ScreenToClient", "Ptr", host.hwnd, "Ptr", pt)
         clientX := NumGet(pt, 0, "Int")
         clientY := NumGet(pt, 4, "Int")
-        tabBarY := 0
-        if Config.TabPosition = "bottom" {
-            clientH := GetClientHeight(host.hwnd)
-            tabBarY := clientH - Config.HeaderHeight
+        clientW := GetClientWidth(host.hwnd)
+        clientH := GetClientHeight(host.hwnd)
+        if IsVertical() {
+            vW := Config.VerticalTabWidth
+            if Config.TabPosition = "left" {
+                if clientX < 0 || clientX >= vW || clientY < 0 || clientY >= clientH
+                    continue
+            } else {
+                if clientX < clientW - vW || clientX >= clientW || clientY < 0 || clientY >= clientH
+                    continue
+            }
+        } else {
+            tabBarY := 0
+            if Config.TabPosition = "bottom"
+                tabBarY := clientH - Config.HeaderHeight
+            if clientY < tabBarY || clientY >= tabBarY + Config.HeaderHeight
+                continue
         }
-        if clientY < tabBarY || clientY >= tabBarY + Config.HeaderHeight
-            continue
         if host.tabScrollMax > 0 {
             host.tabScrollOffset := Max(0, Min(host.tabScrollMax, host.tabScrollOffset - delta))
             DrawTabBar(host)
