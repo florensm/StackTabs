@@ -1230,6 +1230,7 @@ BuildHostInstance(isPopout := false) {
     host.gui.SetFont("s" Config.ThemeFontSize " c" Config.ThemeWindowText, Config.ThemeFontName)
     host.gui.OnEvent("Close", HostGuiClosed.Bind(host))
     host.gui.OnEvent("Size", HostGuiResized.Bind(host))
+    DllCall("RemoveMenu", "Ptr", DllCall("GetSystemMenu", "Ptr", host.gui.hwnd, "Int", 0, "Ptr"), "UInt", 0xF060, "UInt", 0x0)
 
     if IsVertical() {
         vW := Config.VerticalTabWidth
